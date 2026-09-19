@@ -1,0 +1,101 @@
+{
+  "property": "Home flat benchmark capture",
+  "units": "cm",
+  "rooms": {
+    "hall_kitchen": {
+      "note": "Open-plan hall + kitchen, single connected space, irregular quadrilateral (not a rectangle) - kitchen side and balcony side differ in length",
+      "shape": "irregular_quadrilateral",
+      "ceiling_height": 279,
+      "walls": [
+        { "id": "kitchen_side_wall", "length": 526 },
+        { "id": "balcony_side_wall", "length": 466, "note": "opposite kitchen_side_wall" },
+        { "id": "tv_side_wall", "length": 469 },
+        { "id": "bedroom_side_wall", "length": 469, "note": "opposite tv_side_wall" }
+      ],
+      "diagonal": null,
+      "openings": [
+        { "id": "main_door", "type": "door", "width": 106, "height": 210 },
+        { "id": "b1_door", "type": "door", "width": 94, "height": 210, "connects": ["hall_kitchen", "bedroom_b1"], "note": "measured once together with b2_door" },
+        { "id": "b2_door", "type": "door", "width": 94, "height": 210, "connects": ["hall_kitchen", "master_bedroom_b2"], "note": "measured once together with b1_door" },
+        { "id": "bathroom_door", "type": "door", "width": 79.4, "height": 210, "connects": ["hall_kitchen", "bathroom"] },
+        { "id": "balcony_door", "type": "door", "width": 165, "height": 245, "note": "previously mislabeled 'hall window', functions as a sliding door opening" },
+        { "id": "kitchen_window", "type": "window", "width": 110, "height": 101 }
+      ],
+      "damage": [
+        {
+          "id": "leakage_mark",
+          "class": "water_damage",
+          "surface": "hall_wall_beside_bathroom_entrance",
+          "width": 21,
+          "height": 25,
+          "description": "staged, tea-stained paper with drip trails"
+        },
+        {
+          "id": "kitchen_crack",
+          "class": "structural_crack",
+          "surface": "kitchen_wall_near_stove_exhaust",
+          "width": 12,
+          "height": 22
+        }
+      ],
+      "fixtures": [
+        { "id": "sink_washbasin", "length": 79, "height": 67, "note": "not room geometry, excluded from wall/floor-area gates" }
+      ]
+    },
+    "bathroom": {
+      "note": "L-shaped; the tap-side end is narrower (90.3 vs 144). Step size and the remaining segment lengths are not measured",
+      "shape": "L_shape",
+      "ceiling_height": 220,
+      "walls": [
+        { "id": "door_side_wall", "length": 113.5 },
+        { "id": "door_opposite_wall", "length": 204.4 }
+      ],
+      "widths": {
+        "door_side_width": 144,
+        "tap_side_width": 90.3
+      },
+      "openings": [
+        { "id": "bathroom_door", "type": "door", "width": 79.4, "height": 210, "connects": ["hall_kitchen", "bathroom"] },
+        { "id": "bathroom_window", "type": "window", "width": 63, "height": 92.5 }
+      ],
+      "damage": [],
+      "notes": "Real cracked ceiling tile also observed in this bathroom (naturally occurring, not staged) - see edge_cases.md; not included here as a formal ground-truth damage instance unless measured"
+    },
+    "master_bedroom_b2": {
+      "shape": "rectangle",
+      "ceiling_height": 279,
+      "width": 361,
+      "length": 301.5,
+      "openings": [
+        { "id": "b2_door", "type": "door", "width": 94, "height": 210, "connects": ["hall_kitchen", "master_bedroom_b2"], "note": "measured once together with b1_door" },
+        { "id": "b2_window", "type": "window", "width": 110, "height": 240 }
+      ],
+      "notes": "Contains full-length mirror - deliberate edge case for reflection handling"
+    },
+    "bedroom_b1": {
+      "shape": "rectangle",
+      "ceiling_height": 279,
+      "length": 253.5,
+      "width": 241.5,
+      "openings": [
+        { "id": "b1_door", "type": "door", "width": 94, "height": 210, "connects": ["hall_kitchen", "bedroom_b1"], "note": "measured once together with b2_door" },
+        { "id": "b1_window", "type": "window", "width": 110, "height": 240, "note": "shared measurement with B2 window - measured once, applied to both" }
+      ]
+    }
+  },
+  "known_edge_cases": [
+    "Mirrors: full-length mirror in bedroom B2, small wall mirror over the hall wash basin (reflection handling)",
+    "Glossy reflective floor tiles in the hall",
+    "Hall/kitchen is an open-plan irregular quadrilateral, not a rectangle - do not assume 90-degree corners without a diagonal check",
+    "Bathroom is L-shaped, not a rectangle",
+    "Real ceiling crack in bathroom (naturally occurring, unmeasured)",
+    "Hall photos and videos captured in the evening under artificial light"
+  ],
+  "measurement_caveats": [
+    "Doors appear under the same id in each room they connect (b1_door, b2_door, bathroom_door); count each id once for opening scoring - 9 unique openings in total",
+    "b1_door and b2_door: measured once, same value applied to both - not independently verified per door",
+    "B1 & B2 windows: measured once, same value applied to both rooms - not independently verified per window",
+    "Hall diagonal not measured - 4 side lengths alone do not uniquely constrain the quadrilateral's true shape/angles",
+    "Photos captured at 0.8x zoom (ultra-wide lens), video at 0.6x zoom - both have more lens distortion than the main lens; not corrected for in raw ground truth, must be handled in pipeline calibration"
+  ]
+}
