@@ -19,3 +19,13 @@ head-to-head vs a consumer app 10%, capture route 5%, process evidence 5%.
   videos are `.MOV` at the top level. The LiDAR tier uses Cozmo-provided sample data.
 - Ground truth is measured using tape. Staged damage and real damage are labeled separately.
 
+
+## Code
+
+- `uv sync`, then `uv run floorfathom plan <capture_folder> --out out/<name>`; tests with `uv run pytest`
+  (about 6 minutes, synthetic captures in `tests/synth.py`).
+- LiDAR tier per-room plans work; video and photo tiers are not implemented. See `README.md` for
+  the module map, verification numbers and known limitations.
+- `schema/capture_plan.schema.json` is generated: after changing `schema.py`, run
+  `uv run floorfathom schema > schema/capture_plan.schema.json` (a test checks they match).
+- `CozmoData/` and `Data/` are two different flats. `ground_truth.json` belongs to `Data/` only.

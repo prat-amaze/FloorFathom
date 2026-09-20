@@ -3,3 +3,5 @@ Applied Ai.pdf
 __pycache__/
 Data/
 CozmoData/
+out/
+.pytest_cache/
