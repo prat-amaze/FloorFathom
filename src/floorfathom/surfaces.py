@@ -25,7 +25,7 @@ from .schema import RoomPlan, SurfaceRef
 MPP = 0.005  # metres per patch pixel
 COS_MIN = 0.4  # views more oblique than about 66 degrees are not used
 Z_MIN, Z_MAX = 0.3, 5.0  # metres from the camera
-EDGE_JUMP = 0.08  # metres of depth change between neighbouring readings that marks an object outline
+EDGE_JUMP = (0.08, 0.05)  # depth change between neighbouring readings that marks an object outline: metres plus a share of the range
 DEPTH_TOL = (0.10, 0.05)  # accepted depth disagreement: at least 10 cm, or 5% of the range
 LATTICE = (9, 6)
 LUM_SPREAD = 0.06  # views of one point in a depth-free capture may differ this much in lightness (0..1)
@@ -119,12 +119,13 @@ def _depth_edges(frame: Frame) -> np.ndarray:
         d = frame.depth
         jump = np.zeros(d.shape, bool)
         for axis in (0, 1):
-            diff = np.abs(np.diff(d, axis=axis)) > EDGE_JUMP
+            a, b = np.moveaxis(d, axis, 0)[:-1], np.moveaxis(d, axis, 0)[1:]
+            big = np.moveaxis(np.abs(a - b) > EDGE_JUMP[0] + EDGE_JUMP[1] * np.minimum(a, b), 0, axis)  # a tilted plane changes with range
             lo = [slice(None)] * 2
             hi = [slice(None)] * 2
             lo[axis], hi[axis] = slice(0, -1), slice(1, None)
-            jump[tuple(lo)] |= diff
-            jump[tuple(hi)] |= diff
+            jump[tuple(lo)] |= big
+            jump[tuple(hi)] |= big
         jump |= d <= 0
         edges = cv2.dilate(jump.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
         frame._edges = edges
