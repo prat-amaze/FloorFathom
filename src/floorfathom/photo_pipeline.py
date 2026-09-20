@@ -6,26 +6,30 @@ leaving one photo out at a time plus assumed systematic terms. Thin input gives 
 flags, never a confident guess.
 
 Absolute scale is the weak point of monocular depth: on the four rooms of Data/ the depth model's metres were
-right within a few percent in one room and 45-65% too long in two others. With no reference in the capture the
-scale is taken from the model and its uncertainty is set to ``MONO_SCALE_REL_SIGMA``; a caller that knows the
-scale (a reference object) passes ``scale`` and ``scale_rel_sigma``, as in the video tier.
+right within a few percent in one room and 45-65% too long in two others. The capture protocol therefore puts a
+yellow reference ruler in every room; ``photo_reference`` reads the scale from it. With no ruler found the scale
+is taken from the model and its uncertainty is set to ``MONO_SCALE_REL_SIGMA``; a caller that knows the scale
+passes ``scale`` and ``scale_rel_sigma``, which override both.
 """
 
 from __future__ import annotations
 
 import hashlib
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
 from . import layout as L
+from .anchor import REFERENCE_LENGTH_M
 from .estimate import Estimate, RoomEst, make_grid
 from .io_photos import PhotoSet, discover_rooms, load_photo_set
 from .photo_layout import CEILING_RANGE, OPENING_WIDTH, find_openings, floor_and_ceiling, outline_from_segments, wall_segments
 from .photo_pose import Poses, register_rotations
-from .photo_scene import RoomScene, build_scene
+from .photo_reference import MIN_RULER_FRAC, find_ruler, ruler_scale
+from .photo_scene import MAX_DEPTH_M, MIN_DEPTH_M, RoomScene, _edge_mask, build_scene
 from .render import render_plan
 from .report import capture_plan
 from .schema import CapturePlan, Diagnostics, Measurement, RoomPlan, Station
@@ -34,6 +38,7 @@ from .uncertainty import RoomSamples, _iou, _match_edge, jackknife_scale
 
 Z95 = 1.96
 DEPTH_LONG_SIDE = 924
+FRAME_LONG_SIDE = 2016  # the pictures handed to the damage stage: a 3 mm crack is a pixel or two at 1008, four at 2016
 MONO_SCALE_REL_SIGMA = 0.30  # assumed 1-sigma of the depth model's room scale with no reference (four rooms spread 0-65%)
 # 95% half-widths added in quadrature to the sampling spread: (absolute m, relative). Assumed, not calibrated:
 # four rooms cannot calibrate anything. They cover registration by rotation only, arm swing and depth bowing.
@@ -134,7 +139,58 @@ def _null(name: str, seconds: float, seed: int, flags: list[str], models: list[s
     )
 
 
-def plan_photo_room(
+@dataclass
+class PhotoRoom:
+    """One room's plan with what later stages (damage) need to look at its surfaces again."""
+
+    plan: CapturePlan  # one RoomPlan in the room's own frame; a null room when it could not be built
+    frames: list = field(default_factory=list)  # surfaces.Frame per fused photo, in the plan's world; empty for a null room
+    floor_y: float | None = None  # plan metres, world +y up with the camera at y = 0
+    ceiling_y: float | None = None  # None when no ceiling was observed
+    scale_rel_sigma: float | None = None  # 1-sigma of the metric scale, as a fraction: widen sizes measured on the frames by it
+
+
+def photo_frames(photos: PhotoSet, poses: Poses, scene: RoomScene, factor: float, hires: PhotoSet | None = None) -> list:
+    """One ``surfaces.Frame`` per fused photo, in the room's frame at metric scale (``factor`` metres per cloud metre).
+
+    The camera is at the origin (the photos turn on the spot), its rotation is camera -> cloud, and the depth is the
+    photo's own depth after the scale harmonisation, times ``factor``, at the working size. Depth is trusted between
+    0.3 and 8 m and away from depth jumps; the reference ruler's pixels are not, so the ruler is never reported as
+    damage. ``hires``, the same photos loaded at a larger size, gives the frames' pictures and their intrinsics; the
+    depth stays at the working size and is indexed at its own size.
+    """
+    import cv2
+
+    from .surfaces import Frame
+
+    index = {im.name: i for i, im in enumerate(photos.images)}
+    big = {im.name: im for im in hires.images} if hires is not None else {}
+    frames = []
+    for k, name in enumerate(scene.used):
+        i = index[name]
+        im, z = photos.images[i], scene.depths[k]
+        h, w = z.shape
+        ok = (z > MIN_DEPTH_M) & (z < MAX_DEPTH_M) & ~_edge_mask(z)
+        ruler = find_ruler(cv2.cvtColor(im.rgb, cv2.COLOR_RGB2BGR), MIN_RULER_FRAC * max(h, w))
+        if ruler is not None:
+            block = np.zeros((h, w), np.uint8)
+            cv2.line(block, tuple(int(x) for x in ruler[0]), tuple(int(x) for x in ruler[1]), 1, thickness=int(0.05 * max(h, w)))
+            ok &= block == 0
+        pose = np.eye(4)
+        pose[:3, :3] = scene.rotation @ np.asarray(poses.rotations[i], float)
+        pic = big.get(name, im)  # the larger picture if there is one; its own focal length in its own pixels
+        ph, pw = pic.rgb.shape[:2]
+        frames.append(Frame(rgb=pic.rgb, K=np.array([[pic.f_px, 0, pw / 2], [0, pic.f_px, ph / 2], [0, 0, 1.0]]), pose=pose,
+                            depth=(z * factor).astype(np.float32), depth_ok=ok))
+    return frames
+
+
+def plan_photo_room(*args, **kwargs) -> CapturePlan:
+    """The plan of one room from its stills; see ``build_photo_room``."""
+    return build_photo_room(*args, **kwargs).plan
+
+
+def build_photo_room(
     name: str,
     photos: PhotoSet,
     poses: Poses,
@@ -143,16 +199,27 @@ def plan_photo_room(
     scale: float | None = None,
     scale_rel_sigma: float | None = None,
     models: list[str] | None = None,
-) -> CapturePlan:
-    """The plan of one room from its stills. ``scale`` (metres per depth-model metre) and its relative sigma
-    override the monocular default when a reference gives the scale."""
+    reference_length_m: float | None = None,
+    hires: Callable[[], PhotoSet] | None = None,
+) -> PhotoRoom:
+    """The plan of one room from its stills, with its frames. The scale comes from the reference ruler in the photos when it is
+    found (``reference_length_m`` overrides its length); ``scale`` (metres per depth-model metre) and its relative
+    sigma override that; with neither, the depth model's own metres are used and flagged."""
     t0 = time.perf_counter()
     models = models or []
     flags = list(dict.fromkeys(photos.flags + poses.flags))
     scene: RoomScene | None = build_scene(photos, poses, depth, seed)
     if scene is None:
-        return _null(name, time.perf_counter() - t0, seed, [*flags, "insufficient_views"], models)
+        return PhotoRoom(_null(name, time.perf_counter() - t0, seed, [*flags, "insufficient_views"], models))
     flags += scene.flags
+    if scale is None:
+        ruler, ruler_flags = ruler_scale(photos, poses, scene, wall_segments(scene.cloud.points, seed),
+                                         reference_length_m or REFERENCE_LENGTH_M)
+        flags += ruler_flags
+        if ruler is None:
+            flags.append("reference_ruler_not_found")
+        else:
+            scale, scale_rel_sigma = ruler.factor, ruler.rel_sigma
     factor = 1.0 if scale is None else scale
     method, rel = ("monocular_depth", MONO_SCALE_REL_SIGMA) if scale is None else (
         "reference_object", 0.03 if scale_rel_sigma is None else scale_rel_sigma)
@@ -162,7 +229,7 @@ def plan_photo_room(
     grid = make_grid(points, scene.traj_xz * factor)
     ref = _room_from_points(points, grid, seed)
     if ref is None:
-        return _null(name, time.perf_counter() - t0, seed, [*flags, "room_outline_not_found"], models)
+        return PhotoRoom(_null(name, time.perf_counter() - t0, seed, [*flags, "room_outline_not_found"], models))
 
     n = scene.cloud.n_chunks
     samples = _leave_one_out(points, scene.cloud.chunk, n, grid, ref, seed)
@@ -197,7 +264,10 @@ def plan_photo_room(
     d.frames_used = None
     d.conventions, d.scale_method, d.scale_factor, d.scale_rel_sigma = CONVENTIONS, method, round(factor, 5), round(rel, 4)
     d.models, d.notes = models, list(room.flags)
-    return plan
+    return PhotoRoom(
+        plan, photo_frames(photos, poses, scene, factor, None if hires is None else hires()),
+        None if ref.floor is None else float(ref.floor.y), None if ref.ceiling is None else float(ref.ceiling.y), float(rel),
+    )
 
 
 def _write(plan: CapturePlan, out: Path) -> None:
@@ -206,16 +276,17 @@ def _write(plan: CapturePlan, out: Path) -> None:
     render_plan(plan, out / "plan.png")
 
 
-def run_photo(
+def photo_rooms(
     capture: str | Path,
     out: str | Path,
     seed: int = 0,
     scale: float | None = None,
     scale_rel_sigma: float | None = None,
     depth: Depth | None = None,
-    **_ignored,
-) -> CapturePlan:
-    """One plan per room folder of ``capture`` (written to ``out/rooms/<room>.json``) and the stitched property plan."""
+    reference_length_m: float | None = None,
+) -> list[PhotoRoom]:
+    """Every room folder of ``capture`` built, with unique ids across the capture. The rooms are in their own
+    frames, not stitched. ``out`` holds the depth cache."""
     capture, out = Path(capture), Path(out)
     rooms = discover_rooms(capture)
     if not rooms:
@@ -226,23 +297,53 @@ def run_photo(
 
         depth = cached_depth(out / "work" / "depth")
         models = [f"{DEPTH}@{REGISTRY[DEPTH].revision[:10]}"]
-    plans = []
-    for name, paths in rooms.items():
+    built = []
+    for k, (name, paths) in enumerate(rooms.items()):
         photos = load_photo_set(name, paths)
         poses = register_rotations(photos.images, seed=seed) if len(photos.images) >= 2 else Poses(
             [None] * len(photos.images), None, {}, None, ["insufficient_registration"])
-        plan = plan_photo_room(name, photos, poses, depth, seed, scale, scale_rel_sigma, models)
-        (out / "rooms").mkdir(parents=True, exist_ok=True)
-        (out / "rooms" / f"{name}.json").write_text(plan.model_dump_json(indent=2))
-        plans.append(plan)
-    for k, plan in enumerate(plans):  # ids unique across the capture: room_k, r{k}_w*, r{k}_o*
-        _renumber(plan.rooms[0], k)
+        room = build_photo_room(name, photos, poses, depth, seed, scale, scale_rel_sigma, models, reference_length_m,
+                                hires=lambda name=name, paths=paths: load_photo_set(name, paths, long_side=FRAME_LONG_SIDE))
+        _renumber(room.plan.rooms[0], k)  # ids unique across the capture: room_k, r{k}_w*, r{k}_o*
+        built.append(room)
+    return built
+
+
+def run_photo(
+    capture: str | Path,
+    out: str | Path,
+    seed: int = 0,
+    scale: float | None = None,
+    scale_rel_sigma: float | None = None,
+    depth: Depth | None = None,
+    reference_length_m: float | None = None,
+    **_ignored,
+) -> CapturePlan:
+    """One plan per room folder of ``capture`` (written to ``out/rooms/<room>.json``) and the stitched property plan."""
+    capture, out = Path(capture), Path(out)
+    built = photo_rooms(capture, out, seed, scale, scale_rel_sigma, depth, reference_length_m)
+    plans = [r.plan for r in built]
     placed = [p for p in plans if p.rooms[0].polygon]
     result = stitch_plans(placed, capture.name) if placed else plans[0]
     # every room folder keeps its own plan: a room the stitcher could not place stays in its own frame, and a
     # room that could not be built stays as a null room
     kept = {r.id for r in result.rooms}
     result.rooms += [p.rooms[0] for p in plans if p.rooms[0].id not in kept]
+    try:
+        from . import photo_damage
+    except ImportError:  # the damage stage is optional
+        photo_damage = None
+    if photo_damage is not None:  # after stitching: its rules need the rooms in one frame
+        for room in built:
+            if room.frames:
+                try:
+                    photo_damage.assess(room, result)
+                except Exception as e:  # damage is an add-on: a failure there must not cost the room plan
+                    for r in (room.plan.rooms[0], *[x for x in result.rooms if x.id == room.plan.rooms[0].id]):
+                        r.flags.append(f"damage_assessment_failed:{type(e).__name__}")
+    (out / "rooms").mkdir(parents=True, exist_ok=True)
+    for room in built:
+        (out / "rooms" / f"{room.plan.rooms[0].name}.json").write_text(room.plan.model_dump_json(indent=2))
     _write(result, out)
     return result
 
