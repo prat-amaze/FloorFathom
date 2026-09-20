@@ -86,11 +86,17 @@ def overlaps(rooms: list[RoomPlan], min_area: float = 0.1) -> list[tuple[str, st
     return sorted(found, key=lambda t: -t[2])
 
 
-def footprint_area(rooms: list[RoomPlan]) -> float:
-    """Square metres of floor covered by the rooms together, overlaps counted once."""
-    polys = [np.asarray(r.polygon, float) for r in rooms]
+def union_area(polys: list[np.ndarray]) -> float:
+    """Square metres covered by the polygons together, overlaps counted once."""
+    if not polys:
+        return 0.0
     origin, shape = _canvas(polys, CELL)
     return float(_mask(polys, origin, shape, CELL).sum() * CELL**2)
+
+
+def footprint_area(rooms: list[RoomPlan]) -> float:
+    """Square metres of floor covered by the rooms together, overlaps counted once."""
+    return union_area([np.asarray(r.polygon, float) for r in rooms])
 
 
 # ---- placing rooms that arrive in their own frames ------------------------------------
@@ -260,7 +266,12 @@ def describe(rooms: list[RoomPlan], placements: list[Placement], unplaced: list[
 
 
 def stitch_plans(plans: list[CapturePlan], name: str) -> CapturePlan:
-    """One property plan from per-room plans (one capture of one room each), placed by their doorways."""
+    """One property plan from per-room plans (one capture of one room each), placed by their doorways.
+
+    All plans must come from one tier: a property is stitched from one kind of capture, never a mix.
+    """
+    if len({p.tier for p in plans}) != 1:
+        raise ValueError(f"plans from different tiers cannot be stitched together: {sorted({p.tier for p in plans})}")
     rooms: list[RoomPlan] = []
     for plan in plans:
         for r in plan.rooms:
