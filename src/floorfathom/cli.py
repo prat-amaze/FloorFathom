@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .models import REGISTRY, ModelError, fetch
 from .pipeline import run, schema_json
 
 
@@ -33,9 +34,22 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("schema", help="print the JSON Schema of the output")
 
+    f = sub.add_parser("fetch-models", help="download the pretrained models once (the only step that needs the network)")
+    f.add_argument("--model", choices=sorted(REGISTRY), help="fetch one model (default: all)")
+
     args = ap.parse_args(argv)
     if args.cmd == "schema":
         print(schema_json())
+        return 0
+    if args.cmd == "fetch-models":
+        try:
+            for name in [args.model] if args.model else sorted(REGISTRY):
+                spec = REGISTRY[name]
+                print(f"{name}: {spec.repo_id} @ {spec.revision[:10]}, licence: {spec.licence}")
+                print(f"  ready in {fetch(name)}")
+        except ModelError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 3
         return 0
     if not args.capture.is_dir():
         print(f"error: {args.capture} is not a folder", file=sys.stderr)
