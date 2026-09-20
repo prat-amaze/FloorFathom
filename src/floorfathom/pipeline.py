@@ -6,12 +6,14 @@ import json
 import time
 from pathlib import Path
 
+from .drift import correct_points, correct_trajectory, estimate_drift
 from .estimate import Params, estimate, make_grid
 from .io_lidar import load_scan
 from .points import build_cloud
 from .render import render_plan
 from .report import capture_plan
-from .schema import CapturePlan
+from .schema import CapturePlan, Stitching
+from .stitch import describe, union_area
 from .uncertainty import bootstrap, jackknife_scale
 
 
@@ -27,6 +29,30 @@ def detect_tier(capture: Path) -> str:
     raise ValueError(f"cannot tell the input tier of {capture}")
 
 
+def _lidar_stitching(cloud, traj, ref, plan: CapturePlan, params: Params, ablate: bool) -> Stitching:
+    """Adjacency, overlaps and footprint of the rooms, and what was done about pose drift.
+
+    The plan uses the poses as they are. Drift is estimated anyway and the footprint is
+    recomputed with it corrected, so every plan carries its own on/off comparison.
+    """
+    text = "Poses are used as recorded (ARKit visual-inertial odometry) and drift is not corrected. "
+    if not ablate or ref.floor is None:
+        return describe(plan.rooms, [], [], text + "The drift ablation was not run.")
+    drift = estimate_drift(cloud, ref.floor.y)
+    fixed = correct_points(cloud, drift)
+    on = estimate(fixed.points, correct_trajectory(traj, drift), params, grid=make_grid(fixed.points, traj))
+    off_area = describe(plan.rooms, [], [], "").footprint.value
+    on_area = union_area([r.outline.polygon for r in on.rooms])
+    text += (
+        f"Ablation: the drift estimate (walls of {drift.n_pairs} chunk pairs registered) puts chunks up to "
+        f"{drift.max_shift * 100:.0f} cm and {drift.max_yaw_deg:.1f} deg apart; applying it gives a footprint of "
+        f"{on_area:.1f} m2 ({len(on.rooms)} rooms) against {off_area:.1f} m2 ({len(plan.rooms)} rooms) without "
+        f"({(on_area / off_area - 1) * 100:+.1f}%). It is not applied: on two repeat walks of one flat it did not "
+        "make them agree better, and the tolerances of the estimate are assumptions, not calibrated."
+    )
+    return describe(plan.rooms, [], [], text)
+
+
 def run_lidar(
     capture: Path,
     out: Path,
@@ -36,6 +62,7 @@ def run_lidar(
     n_chunks: int = 20,
     debug: bool = True,
     params: Params | None = None,
+    drift_ablation: bool = True,
 ) -> CapturePlan:
     t0 = time.perf_counter()
     params = params or Params()
@@ -60,6 +87,7 @@ def run_lidar(
         sharp,
         jackknife_scale(n_chunks, 2),
     )
+    plan.stitching = _lidar_stitching(cloud, traj, ref, plan, params, drift_ablation)
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.json").write_text(plan.model_dump_json(indent=2))
     render_plan(plan, out / "plan.png")
