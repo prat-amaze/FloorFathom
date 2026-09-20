@@ -98,8 +98,22 @@ consistency only.
   the other capture (overlap 0.71-0.90). The largest room agrees to 0.3% in area. **Other
   rooms differ by 4-27% in area, and wall lengths differ by a median of 44 cm, so the
   1 cm / 0.5% repeatability gate is not met on real scans.** Part of that is real (the
-  walks did not see the same things), but the estimator also leaks into narrow spaces
-  behind doorways and splits walls differently between scans.
+  walks did not see the same things), so this comparison does not isolate the estimator.
+- Same walk, two frame subsets, `scripts/same_walk_repeatability.py` (coverage identical, so
+  only the estimator differs; `single_scan_with_ceiling`, six rooms match one to one). Room
+  areas agree within 1% for four rooms and 5% for the two smallest. Wall **lines** repeat well:
+  median position difference 0.3 cm, 76% within 1 cm. Wall **corners** (both neighbours
+  supported) move by a median 1.5 cm (46% within 1 cm, 64% within 3 cm). A wall end next to an
+  unsupported edge (a doorway or an unseen stretch) moves by a median 31 cm, and only 26% of
+  the walls that lie on the same line in both runs meet the 1 cm / 0.5% gate (median length
+  difference 9 cm, n = 19). So the wall length gate fails on segmentation and unsupported
+  ends, not on wall position. With the drift correction on, the same test gives a line position
+  difference of 1.8 cm and corners of 3.2 cm (median): each run estimates the drift separately and the
+  two estimates differ by a median 1.5 cm (up to 3.5 cm and 0.9 degrees) on drifts of 16 cm and 4
+  degrees, which the correction removes. Snapping wall directions to the room's dominant
+  direction was tried and moved corners only from 1.7 to 1.3 cm median, so it was not kept.
+  This measures the estimator, not the device: it is not a repeat capture and no tape truth
+  is involved.
 
 ### Drift ablation (footprint with the correction on and off)
 
