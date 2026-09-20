@@ -2,7 +2,7 @@
 
     uv run python scripts/export_photo_patches.py Data out/damage_patches/photo [--cache-dir out/photo_new] [--reference-length-cm 31.6]
 
-One ``<room>_<surface id>.npz`` (rgb uint8, valid bool, m_per_px, kind, room, surface) and one .png preview per surface,
+One ``<room>_<surface id>.npz`` (rgb float16 0..1, valid bool, m_per_px, kind, room, surface; the layout scripts/eval_damage_patches.py reads) and one .png preview per surface,
 built exactly as ``photo_damage.assess`` builds them (one view enough, no relief). The depth cache under
 ``<cache-dir>/work/depth`` is reused, so after a photo run this costs no depth-model time.
 """
@@ -37,11 +37,11 @@ def export_patches(room, out_dir: Path, mpp: float = MPP) -> list[str]:
         for fr in room.frames:
             acc.add(fr)
         patch = acc.patch()
-        rgb = (np.clip(patch.rgb, 0, 1) * 255).astype(np.uint8)
+        rgb = np.clip(patch.rgb, 0, 1)
         stem = f"{(own.name or own.id).lower()}_{ref.id}"
-        np.savez_compressed(out_dir / f"{stem}.npz", rgb=rgb, valid=patch.valid, m_per_px=patch.m_per_px,
+        np.savez_compressed(out_dir / f"{stem}.npz", rgb=rgb.astype(np.float16), valid=patch.valid, m_per_px=patch.m_per_px,
                             kind=ref.kind, room=own.id, surface=ref.id)
-        cv2.imwrite(str(out_dir / f"{stem}.png"), _preview(rgb, patch.valid))
+        cv2.imwrite(str(out_dir / f"{stem}.png"), _preview((rgb * 255).astype(np.uint8), patch.valid))
         stems.append(stem)
     return stems
 
