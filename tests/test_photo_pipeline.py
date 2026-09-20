@@ -149,8 +149,17 @@ def test_run_photo_gives_every_room_folder_a_plan_with_unique_ids_and_keeps_a_ro
 
     monkeypatch.setattr(PP, "load_photo_set", fake_load)
     monkeypatch.setattr(PP, "register_rotations", lambda images, seed=0: poses_of[id(images)])
+    from floorfathom import photo_damage
+
+    debug_dirs = []
+    monkeypatch.setattr(photo_damage, "assess", lambda room, result, **kw: debug_dirs.append(kw.get("debug_dir")))
     plan = PP.run_photo(tmp_path, tmp_path / "out", depth=lambda rgb: fakes[int(rgb[0, 0, 1])](rgb),
                         scale=1.0, scale_rel_sigma=0.02)
+    assert debug_dirs and set(debug_dirs) == {tmp_path / "out" / "debug" / "damage"}  # damage pictures by default
+    debug_dirs.clear()
+    PP.run_photo(tmp_path, tmp_path / "out2", depth=lambda rgb: fakes[int(rgb[0, 0, 1])](rgb),
+                 scale=1.0, scale_rel_sigma=0.02, debug=False)
+    assert debug_dirs and set(debug_dirs) == {None}
     assert plan.tier == "photo" and sorted(r.name for r in plan.rooms) == ["a", "b", "thin"]
     ids = [r.id for r in plan.rooms] + [w.id for r in plan.rooms for w in r.walls]
     assert len(ids) == len(set(ids))
