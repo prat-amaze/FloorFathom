@@ -29,7 +29,7 @@ from .io_video import extract_keyframes
 from .points_video import build_dense_cloud, to_cloud
 from .render import render_plan
 from .report import capture_plan
-from .schema import CapturePlan, Diagnostics, Measurement, RoomPlan
+from .schema import CapturePlan, Diagnostics, Measurement, RoomPlan, Stitching
 from .sfm import MIN_REGISTERED, run_sfm
 from .stitch import stitch_plans
 from .uncertainty import bootstrap, jackknife_scale
@@ -153,32 +153,64 @@ def _renumber(room: RoomPlan, k: int) -> None:
     renumber_damage(room, k)
 
 
-def run_video(capture: str | Path, out: str | Path, **kw) -> CapturePlan:
-    """One plan for a clip, or one stitched property plan for a folder of clips (each clip is one room).
+def _empty_stitching() -> Stitching:
+    """``stitching`` of a run that gave no room: present, so the plan's shape does not depend on the outcome."""
+    footprint = Measurement(value=None, lo=None, hi=None, unit="m2", method="union of the room polygons", note="no room was found")
+    return Stitching(footprint=footprint, links=[], drift="no room, nothing to place")
 
-    Every clip gets its own plan and cache under ``out/rooms/<clip>/``; the rooms are placed in one
-    frame by gluing their doorways (``stitch.py``). A clip that gave no room is listed in the notes, and
-    a room that could not be placed stays in its own frame (``stitching.unplaced``).
+
+def _move_debug(src: Path, dst: Path, k: int) -> None:
+    """Move a clip's damage pictures into the run's ``debug/damage``, named after the renumbered surfaces (``r0_`` -> ``r<k>_``)."""
+    if not src.is_dir():
+        return
+    dst.mkdir(parents=True, exist_ok=True)
+    for png in src.glob("*.png"):
+        png.replace(dst / (png.name.replace("r0_", f"r{k}_", 1) if png.name.startswith("r0_") else png.name))
+    for empty in (src, src.parent):  # work/ holds caches only
+        try:
+            empty.rmdir()
+        except OSError:
+            pass
+
+
+def run_video(capture: str | Path, out: str | Path, **kw) -> CapturePlan:
+    """One stitched plan for a clip or for a folder of clips (each clip is one room), in one layout.
+
+    ``out`` gets ``plan.json`` (``stitching`` always present: one clip is a footprint of that room and no links),
+    ``plan.png``, ``rooms/<clip>.json`` (each clip's own plan), ``debug/damage/<surface>.png`` and ``work/`` (caches
+    only; a folder keeps one ``work/<clip>/`` per clip). The rooms are placed in one frame by gluing their doorways
+    (``stitch.py``). A clip that gave no room is listed in the notes, and a room that could not be placed stays in
+    its own frame (``stitching.unplaced``).
     """
     t0 = time.perf_counter()
     capture, out = Path(capture), Path(out)
     clips = [capture] if capture.is_file() else sorted([*capture.glob("*.MOV"), *capture.glob("*.mp4")])
     if not clips:
         raise ValueError(f"no video clips found in {capture}")
-    if len(clips) == 1:
-        return run_clip(clips[0], out, **kw)
-    plans = [run_clip(clip, out / "rooms" / clip.stem, **kw) for clip in clips]
+    many = len(clips) > 1
+    plans = []
+    for clip in clips:
+        work = out / "work" / clip.stem if many else out / "work"
+        plans.append(run_clip(clip, out, work=work, debug_dir=work / "debug" / "damage", write=False, **kw))
     built = [p for p in plans if p.rooms and p.rooms[0].polygon]
     for k, p in enumerate(built):
         _renumber(p.rooms[0], k)
+    for clip, p in zip(clips, plans):
+        if p in built:
+            _move_debug((out / "work" / clip.stem if many else out / "work") / "debug" / "damage", out / "debug" / "damage", built.index(p))
     seed = kw.get("seed", 0)
+    name = capture.name if many else capture.stem
     if not built:
-        result = _no_plan(capture.name, time.perf_counter() - t0, seed, ["no_clip_gave_a_room"] + [f"{p.capture}: {n}" for p in plans for n in p.diagnostics.notes])
+        result = plans[0] if not many else _no_plan(name, time.perf_counter() - t0, seed, ["no_clip_gave_a_room"] + [f"{p.capture}: {n}" for p in plans for n in p.diagnostics.notes])
+        result.stitching = _empty_stitching()
     else:
-        result = stitch_plans(built, capture.name)
+        result = stitch_plans(built, name)
         kept = {r.id for r in result.rooms}
         result.rooms += [p.rooms[0] for p in built if p.rooms[0].id not in kept]
         result.diagnostics.notes += [f"{p.capture}: no room ({', '.join(p.diagnostics.notes)})" for p in plans if p not in built]
+    (out / "rooms").mkdir(parents=True, exist_ok=True)
+    for p in plans:  # each clip's own plan, in its own frame, like the photo tier's rooms/<room>.json
+        (out / "rooms" / f"{p.capture}.json").write_text(p.model_dump_json(indent=2))
     _write(result, out)
     return result
 
@@ -195,15 +227,20 @@ def run_clip(
     params: Params | None = None,
     keyframe_step_s: float = KEYFRAME_STEP_S,
     assess_damage: bool = True,
+    work: Path | None = None,
+    debug_dir: Path | None = None,
+    write: bool = True,
     **_ignored,
 ) -> CapturePlan:
     """Plan for one clip. ``scale`` (metres per SfM unit) and its relative sigma override the depth model's;
-    ``reference_length_m`` is the tape-measured length of the ruler's yellow body (default: ours)."""
+    ``reference_length_m`` is the tape-measured length of the ruler's yellow body (default: ours).
+    ``work`` (caches, default ``out/work``) and ``debug_dir`` (damage pictures, default ``out/debug/damage``) let
+    ``run_video`` keep several clips apart; ``write=False`` leaves ``plan.json`` and ``plan.png`` to the caller."""
     t0 = time.perf_counter()
     name = clip.stem
     params = params or Params()
 
-    work = out / "work"
+    work = work or out / "work"
     st = clip.stat()
     sfm_stamp = f"v2:{clip.name}:{st.st_size}:{int(st.st_mtime)}:seed{seed}"
     if keyframe_step_s != KEYFRAME_STEP_S:  # caches made at the default spacing keep their stamp
@@ -213,7 +250,8 @@ def run_clip(
     if sfm is None or sfm.registered_fraction < MIN_REGISTERED:
         notes = ["sfm_failed" if sfm is None else "sfm_registered_too_few_frames"] + ([] if sfm is None else sfm.flags)
         plan = _no_plan(name, time.perf_counter() - t0, seed, notes, n_keyframes=len(kf))
-        _write(plan, out)
+        if write:
+            _write(plan, out)
         return plan
 
     stride = max(1, int(sfm.registered.sum()) // TARGET_DENSE_FRAMES)
@@ -230,7 +268,8 @@ def run_clip(
         dense = build_dense_cloud(kf, sfm, dm, n_chunks=N_CHUNKS, frame_stride=stride)
     if dense is None:
         plan = _no_plan(name, time.perf_counter() - t0, seed, ["dense_cloud_failed"] + sfm.flags, n_keyframes=len(kf))
-        _write(plan, out)
+        if write:
+            _write(plan, out)
         return plan
 
     if scale is None:
@@ -275,7 +314,8 @@ def run_clip(
         d.models = [f"{DEPTH}@{REGISTRY[DEPTH].revision[:10]}"]
     if assess_damage and ref.floor is not None and plan.rooms:  # before stitching: damage is in each clip's own room frame
         for room in plan.rooms:
-            d.notes += [f"{room.id}: {n}" for n in assess_video(room, float(ref.floor.y), kf, sfm, rotation, scale, rel, dm, debug_dir=out / "debug" / "damage", frames=set(dense.frame_ratio))]
+            d.notes += [f"{room.id}: {n}" for n in assess_video(room, float(ref.floor.y), kf, sfm, rotation, scale, rel, dm, debug_dir=debug_dir or out / "debug" / "damage", frames=set(dense.frame_ratio))]
         d.notes.append("Damage classes, concealed-damage rules and scope actions are our own definitions, tuned on synthetic surfaces; no real damage was available to check them (README).")
-    _write(plan, out)
+    if write:
+        _write(plan, out)
     return plan
