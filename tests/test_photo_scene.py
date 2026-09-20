@@ -1,6 +1,7 @@
 """Fusing one room's photos: gravity and floor recovered, the shared estimator then reads a room from the cloud."""
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 from synth import rect
 from synth_photo import CAMERA_HEIGHT, room_photos
 
@@ -59,6 +60,15 @@ def test_a_different_scale_error_in_every_photo_is_estimated_from_the_overlaps_a
     est = estimate(scene.cloud.points, scene.traj_xz, Params())
     assert len(est.rooms) == 1 and abs(est.rooms[0].area / 20.0 - 1.0) < 0.06
     assert abs(est.rooms[0].ceiling_height - HEIGHT) < 0.08
+
+
+def test_a_photo_with_a_wrong_rotation_is_dropped_and_flagged_and_the_rest_still_fuse():
+    photos, poses, depth, _ = room_photos(ROOM, HEIGHT, STATION, YAWS, [8.0] + [0.0] * 7, [5.0] + [0.0] * 7, noise=0.005)
+    poses.rotations[3] = Rotation.from_euler("y", 25, degrees=True).as_matrix() @ poses.rotations[3]
+    scene = build_scene(photos, poses, depth)
+    assert "image_inconsistent:3.jpg" in scene.flags and "3.jpg" not in scene.used and len(scene.used) == 7
+    est = estimate(scene.cloud.points, scene.traj_xz, Params())
+    assert len(est.rooms) == 1 and abs(est.rooms[0].area / 20.0 - 1.0) < 0.06
 
 
 def test_images_without_a_pose_are_left_out_and_chunks_follow_the_used_images():
