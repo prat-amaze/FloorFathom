@@ -65,7 +65,26 @@ where the output lands, known limits. Outputs go to `out/` (git-ignored); clear 
 
 ### Photo tier: floor plan and room plan commands
 
-(owner fills)
+- Floor plan (every room folder, stitched): `uv run floorfathom plan Data --tier photo --out out/photo --reference-length-cm 31.6`
+  (cold 4 min, cached 2.3 min, measured on 12 cores with nothing else running; two cold runs gave identical JSON;
+  `--tier photo` is needed because `Data/` also holds `.MOV` files).
+- Room plan (one room folder of 2-8 stills): `uv run floorfathom plan Data/Hall --tier photo --out out/hall --reference-length-cm 31.6`
+  (the folder may be `Data/B1`, `Data/B2` or `Data/Hall`).
+- Outputs: `plan.json` (stitched property plan; each room keeps its own frame if it could not be placed), `rooms/<room>.json`
+  (that room's own plan), `plan.png`, `debug/damage/<surface>.png`, `work/depth/` (cached depth maps: a rerun of the same
+  photos into the same `--out` skips the model and gives the same numbers).
+- How: SIFT rotation-only registration of the stills from one spot, monocular metric depth (Depth Anything V2 Metric-Indoor
+  Small, fetched by `floorfathom fetch-models`, offline afterwards), depth scales harmonised across overlaps, gravity from wall
+  thinness, wall/floor/ceiling planes by RANSAC, walls outlined by ray casting. Scale comes from the yellow reference ruler
+  when it is found in the photos (`photo_reference`), else from the model with a 30% scale uncertainty. Intervals: leave-one-photo-out
+  plus assumed systematic terms plus scale uncertainty. Thin input gives wider intervals or null values, never a confident guess.
+- Code: `io_photos`, `photo_pose`, `photo_scene`, `photo_layout`, `photo_reference`, `photo_pipeline.run_photo`,
+  `photo_damage` (shared damage stack on the photo frames).
+- Limits (Data/, tape in `ground_truth.json`, first real run): the ±8% wall gate is not met. Areas are null in all three rooms
+  (outline incomplete: some walls are never seen from one spot), and unseen walls get no length. Ceiling with the ruler: Hall
+  3.10 m and B2 2.44 m vs 2.79 m tape, intervals contain the tape; B1 has no ruler found (3.32 m, interval 1.3-5.3 m).
+  Unregistered photos: 3 of 6 in B1, 2 of 9 in Hall. Depth scale differs from photo to photo, so B2 and Hall carry
+  `depth_scale_inconsistent`/`pose_loop_inconsistent`. Only four rooms exist, so the intervals are uncalibrated.
 
 ### Video-tier damage
 
