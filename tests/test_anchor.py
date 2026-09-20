@@ -6,7 +6,8 @@ import cv2
 import numpy as np
 import pytest
 
-from floorfathom.anchor import SegmentObs, estimate_anchor, find_strip
+from floorfathom.anchor import SegmentObs, estimate_anchor, find_strip, track_strip
+from floorfathom.io_video import Keyframes
 from floorfathom.sfm import SfmResult
 
 F, CX, CY = 700.0, 360.0, 640.0
@@ -99,3 +100,45 @@ def test_follows_the_strip_from_where_it_was_last_seen():
 
 def test_no_strip_no_detection():
     assert find_strip(_door_image(strip=False)) is None
+
+
+def _ruler_image() -> np.ndarray:
+    img = _door_image(strip=False)  # brown door with a large white wall patch
+    cv2.rectangle(img, (340, 400), (372, 700), (40, 235, 215), -1)  # BGR yellow-green ruler body (hue about 33 as measured), 32 x 300 px
+    cv2.rectangle(img, (330, 400), (340, 700), (200, 200, 200), -1)  # its clear plastic edge, light grey
+    for y in range(420, 700, 60):
+        cv2.line(img, (345, y), (367, y), (30, 30, 30), 2)  # black tick marks
+    return img
+
+
+def test_finds_the_yellow_ruler_and_not_the_white_wall_or_its_clear_edge():
+    top, bottom = find_strip(_ruler_image(), colour="yellow")
+    assert top[0] == pytest.approx(356, abs=3) and bottom[0] == pytest.approx(356, abs=3)
+    assert top[1] == pytest.approx(400, abs=4) and bottom[1] == pytest.approx(700, abs=4)
+
+
+def test_a_yellow_search_ignores_a_white_strip():
+    assert find_strip(_door_image(), colour="yellow") is None
+
+
+def test_video_yellow_is_more_orange_than_still_yellow():
+    img = _door_image(strip=False)
+    cv2.rectangle(img, (340, 400), (372, 700), (30, 175, 200), -1)  # BGR, hue about 25: how video frames render the ruler
+    assert find_strip(img, colour="yellow") is None
+    top, bottom = find_strip(img, colour="yellow_video")
+    assert top[1] == pytest.approx(400, abs=4) and bottom[1] == pytest.approx(700, abs=4)
+
+
+def test_an_unknown_colour_is_an_error():
+    with pytest.raises(ValueError):
+        find_strip(_ruler_image(), colour="green")
+
+
+def test_the_strip_search_stops_after_the_time_limit(tmp_path):
+    n = 6
+    for i in range(n):
+        cv2.imwrite(str(tmp_path / f"{i}.png"), _door_image())
+    kf = Keyframes(tmp_path, [f"{i}.png" for i in range(n)], np.arange(n), np.arange(n, dtype=float), np.ones(n), (720, 1280), 30.0, tmp_path / "c.MOV")
+    sfm = _sfm(np.zeros((n, 3)))
+    assert len(track_strip(kf, sfm)) == n
+    assert [o.frame for o in track_strip(kf, sfm, until_s=2.5)] == [0, 1, 2]  # keyframes at 0, 1 and 2 s
