@@ -39,7 +39,7 @@ def write_debug(out: Path, cloud: Cloud, est: Estimate, scan) -> None:
 
     # top-down view, plan coordinates (x, -z)
     fig, ax = plt.subplots(figsize=(11, 9))
-    hb = ax.hexbin(p[:, 0], -p[:, 2], gridsize=220, bins="log", mincnt=1, cmap="Greys", linewidths=0)
+    ax.hexbin(p[:, 0], -p[:, 2], gridsize=220, bins="log", mincnt=1, cmap="Greys", linewidths=0)
     if est.barrier is not None:
         g = est.grid
         rows, cols = np.nonzero(est.barrier)

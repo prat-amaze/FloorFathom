@@ -1,0 +1,387 @@
+{
+  "$defs": {
+    "Diagnostics": {
+      "properties": {
+        "frames_used": {
+          "title": "Frames Used",
+          "type": "integer"
+        },
+        "points": {
+          "title": "Points",
+          "type": "integer"
+        },
+        "floor_height_world": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Floor Height World"
+        },
+        "floor_sharpness": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "fraction of all points inside the floor spike",
+          "title": "Floor Sharpness"
+        },
+        "bootstrap_replicates": {
+          "title": "Bootstrap Replicates",
+          "type": "integer"
+        },
+        "seed": {
+          "title": "Seed",
+          "type": "integer"
+        },
+        "seconds": {
+          "title": "Seconds",
+          "type": "number"
+        },
+        "conventions": {
+          "title": "Conventions",
+          "type": "string"
+        }
+      },
+      "required": [
+        "frames_used",
+        "points",
+        "floor_height_world",
+        "floor_sharpness",
+        "bootstrap_replicates",
+        "seed",
+        "seconds",
+        "conventions"
+      ],
+      "title": "Diagnostics",
+      "type": "object"
+    },
+    "Measurement": {
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        },
+        "lo": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lo"
+        },
+        "hi": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Hi"
+        },
+        "unit": {
+          "enum": [
+            "m",
+            "m2"
+          ],
+          "title": "Unit",
+          "type": "string"
+        },
+        "method": {
+          "description": "how the number was obtained",
+          "title": "Method",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "value",
+        "lo",
+        "hi",
+        "unit",
+        "method"
+      ],
+      "title": "Measurement",
+      "type": "object"
+    },
+    "Opening": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "doorway",
+          "title": "Kind",
+          "type": "string"
+        },
+        "wall_id": {
+          "title": "Wall Id",
+          "type": "string"
+        },
+        "start": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Start",
+          "type": "array"
+        },
+        "end": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "End",
+          "type": "array"
+        },
+        "centre": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Centre",
+          "type": "array"
+        },
+        "width": {
+          "$ref": "#/$defs/Measurement"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "wall_id",
+        "start",
+        "end",
+        "centre",
+        "width"
+      ],
+      "title": "Opening",
+      "type": "object"
+    },
+    "RoomPlan": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "polygon": {
+          "description": "counter-clockwise corner points, plan coordinates",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "title": "Polygon",
+          "type": "array"
+        },
+        "walls": {
+          "items": {
+            "$ref": "#/$defs/Wall"
+          },
+          "title": "Walls",
+          "type": "array"
+        },
+        "ceiling_height": {
+          "$ref": "#/$defs/Measurement"
+        },
+        "floor_area": {
+          "$ref": "#/$defs/Measurement"
+        },
+        "openings": {
+          "items": {
+            "$ref": "#/$defs/Opening"
+          },
+          "title": "Openings",
+          "type": "array"
+        },
+        "flags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Flags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "polygon",
+        "walls",
+        "ceiling_height",
+        "floor_area",
+        "openings"
+      ],
+      "title": "RoomPlan",
+      "type": "object"
+    },
+    "Wall": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "start": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Start",
+          "type": "array"
+        },
+        "end": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "End",
+          "type": "array"
+        },
+        "length": {
+          "$ref": "#/$defs/Measurement"
+        },
+        "evidence": {
+          "description": "wall_points: fitted to LiDAR points on the wall; closure: a straight chord across a gap with no wall points",
+          "enum": [
+            "wall_points",
+            "closure"
+          ],
+          "title": "Evidence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "start",
+        "end",
+        "length",
+        "evidence"
+      ],
+      "title": "Wall",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "default": "0.1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "capture": {
+      "title": "Capture",
+      "type": "string"
+    },
+    "tier": {
+      "enum": [
+        "lidar",
+        "video",
+        "photo"
+      ],
+      "title": "Tier",
+      "type": "string"
+    },
+    "units": {
+      "const": "m",
+      "default": "m",
+      "title": "Units",
+      "type": "string"
+    },
+    "rooms": {
+      "items": {
+        "$ref": "#/$defs/RoomPlan"
+      },
+      "title": "Rooms",
+      "type": "array"
+    },
+    "diagnostics": {
+      "$ref": "#/$defs/Diagnostics"
+    }
+  },
+  "required": [
+    "capture",
+    "tier",
+    "rooms",
+    "diagnostics"
+  ],
+  "title": "CapturePlan",
+  "type": "object"
+}
