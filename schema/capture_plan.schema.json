@@ -132,6 +132,57 @@
       "title": "Diagnostics",
       "type": "object"
     },
+    "Link": {
+      "description": "Which room a doorway opens onto.",
+      "properties": {
+        "room": {
+          "title": "Room",
+          "type": "string"
+        },
+        "opening": {
+          "title": "Opening",
+          "type": "string"
+        },
+        "other": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the room behind the doorway; null if none is within 1.5 m (outside, or not captured)",
+          "title": "Other"
+        },
+        "gap": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "metres from the doorway to the other room's outline; a wall thickness is a real link",
+          "title": "Gap"
+        },
+        "mutual": {
+          "description": "the other room has a doorway of its own next to this one",
+          "title": "Mutual",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "room",
+        "opening",
+        "other",
+        "gap",
+        "mutual"
+      ],
+      "title": "Link",
+      "type": "object"
+    },
     "Measurement": {
       "properties": {
         "value": {
@@ -288,6 +339,135 @@
       "title": "Opening",
       "type": "object"
     },
+    "Overlap": {
+      "properties": {
+        "a": {
+          "title": "A",
+          "type": "string"
+        },
+        "b": {
+          "title": "B",
+          "type": "string"
+        },
+        "area": {
+          "description": "m2 of floor both rooms claim",
+          "title": "Area",
+          "type": "number"
+        }
+      },
+      "required": [
+        "a",
+        "b",
+        "area"
+      ],
+      "title": "Overlap",
+      "type": "object"
+    },
+    "Placement": {
+      "description": "How a room in its own frame was moved into the shared frame, by gluing doorways.",
+      "properties": {
+        "room": {
+          "title": "Room",
+          "type": "string"
+        },
+        "angle": {
+          "description": "radians counter-clockwise, about the room's own origin, applied before the shift",
+          "title": "Angle",
+          "type": "number"
+        },
+        "shift": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Shift",
+          "type": "array"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the placed room this one hangs off; null for the root",
+          "title": "Host"
+        },
+        "host_opening": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Host Opening"
+        },
+        "opening": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "this room's doorway that meets the host's",
+          "title": "Opening"
+        },
+        "overlap": {
+          "description": "m2 shared with the rooms already placed",
+          "title": "Overlap",
+          "type": "number"
+        },
+        "width_diff": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "metres between the two sides of the doorway",
+          "title": "Width Diff"
+        },
+        "margin": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "runner-up cost minus this cost; small means the placement is ambiguous",
+          "title": "Margin"
+        }
+      },
+      "required": [
+        "room",
+        "angle",
+        "shift",
+        "host",
+        "host_opening",
+        "opening",
+        "overlap",
+        "width_diff",
+        "margin"
+      ],
+      "title": "Placement",
+      "type": "object"
+    },
     "RoomPlan": {
       "properties": {
         "id": {
@@ -418,6 +598,57 @@
       "title": "Station",
       "type": "object"
     },
+    "Stitching": {
+      "description": "The rooms as one property: adjacency, placement, overlaps and footprint.",
+      "properties": {
+        "footprint": {
+          "$ref": "#/$defs/Measurement",
+          "description": "m2 of floor covered by all placed rooms, overlaps counted once"
+        },
+        "links": {
+          "items": {
+            "$ref": "#/$defs/Link"
+          },
+          "title": "Links",
+          "type": "array"
+        },
+        "placements": {
+          "description": "empty when the rooms were already in one frame",
+          "items": {
+            "$ref": "#/$defs/Placement"
+          },
+          "title": "Placements",
+          "type": "array"
+        },
+        "overlaps": {
+          "items": {
+            "$ref": "#/$defs/Overlap"
+          },
+          "title": "Overlaps",
+          "type": "array"
+        },
+        "unplaced": {
+          "description": "rooms with no doorway that fits anywhere",
+          "items": {
+            "type": "string"
+          },
+          "title": "Unplaced",
+          "type": "array"
+        },
+        "drift": {
+          "description": "what was done about pose drift, and what it was not",
+          "title": "Drift",
+          "type": "string"
+        }
+      },
+      "required": [
+        "footprint",
+        "links",
+        "drift"
+      ],
+      "title": "Stitching",
+      "type": "object"
+    },
     "Wall": {
       "properties": {
         "id": {
@@ -478,7 +709,7 @@
   },
   "properties": {
     "schema_version": {
-      "default": "0.2.0",
+      "default": "0.3.0",
       "title": "Schema Version",
       "type": "string"
     },
@@ -507,6 +738,17 @@
       },
       "title": "Rooms",
       "type": "array"
+    },
+    "stitching": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Stitching"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "diagnostics": {
       "$ref": "#/$defs/Diagnostics"
