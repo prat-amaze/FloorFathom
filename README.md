@@ -8,7 +8,7 @@ the Cozmo AI case study (`Applied AI.pdf`).
 | Tier | State |
 |---|---|
 | LiDAR (depth + poses + intrinsics) | **Per-room plans working** (this document). |
-| Video | Not started. |
+| Video | **Runs end to end, one room per clip; misses the wall and opening gates on real clips** (see "Video tier"). |
 | Photos | Not started. |
 
 Whole-property stitching (`stitch.py`) is built and tested on synthetic layouts: doorway
@@ -154,6 +154,49 @@ room (6 to 5) with the correction on, which is the failure to watch.
   hung room by the difference. Two doorways of equal width whose rooms fit either way are
   flagged `placement_ambiguous`. Rooms with no visible doorway (a closed door leaf, or a few
   photos) cannot be placed and are listed in `stitching.unplaced`.
+
+## Video tier
+
+```
+uv run floorfathom plan Data/B2.MOV --out out/b2 --reference-length-cm 31.6
+```
+
+One clip is one room. `video_pipeline.py`: keyframes (`io_video.py`), poses and sparse points by
+SfM (`sfm.py`, pycolmap), a dense cloud from a depth model fitted to the SfM depths
+(`points_video.py`), gravity from the floor and ceiling planes (`world.py`), then the same estimator
+and leave-chunks-out intervals as the LiDAR tier. SfM has no scale. The scale comes from the
+protocol's yellow ruler (`anchor.py`): its two ends are triangulated in the first 15 s of the clip
+and its tape-measured length (`--reference-length-cm`, default 31.6, ours) gives metres per SfM unit
+with its own uncertainty. If the ruler is not found, is flagged (few frames, weak sideways
+movement, large residual) or is far from the depth model's scale, the depth model's scale is used,
+every interval carries at least 15% scale uncertainty and the room is flagged
+`scale_from_depth_model_only` with the reason.
+
+Numbers on the new ruler clips (`B2`, `B1`, `H1`, this laptop, tape values in `ground_truth.json`,
+scored with `scripts/eval_video.py`):
+
+| | `B2` | `B1` | `H1` (Hall) |
+|---|---|---|---|
+| keyframes with a pose | 100% | 100% | 100% |
+| scale method | ruler, +-0.6% | ruler, +-0.4% | ruler |
+| walls within 3% of the tape | 0/4 | 0/4 | 0/4 |
+| ceiling | not observed | not observed | 2.74 m [2.60, 2.88] against 2.79 (-1.9%) |
+| openings within 2 cm | 0/1 (found 91 cm, tape 81) | 0/1 (missed) | 0/4 (all missed) |
+| run time | 35 min | 24 min | 35 min |
+
+What this shows and does not show:
+
+- The ruler scale is 0.62-0.65 of the depth model's on these clips. The only independent check is
+  the `H1` ceiling, which the scale estimate never sees: 2.74 m against 2.79 m by tape. The depth
+  model's scale would have given about 4.5 m, and the old `H2` clip (depth scale only) gave 4.68 m.
+  One clip is one data point; `B2` and `B1` had no ceiling to check.
+- The wall and opening gates are not met. Walls come out as fragments (7 to 19 per room) and short
+  (`B2` 2.47 m of 3.61 m, `H1` 1.72 m of 5.26 m); the estimator was tuned on LiDAR clouds, and this
+  was not fixed.
+- Repeatability of `H1` against `H2` was not scored: `H2` was not run on the ruler clips.
+- Without a ruler in view the depth model gave scale errors of -1%, +7% and +67% on the earlier
+  clips, so the fallback cannot meet the +-3% gate.
+- One clip is one room. Stitching video rooms is untested on real clips.
 
 ## Layout
 
