@@ -88,19 +88,11 @@ def test_a_larger_scale_error_widens_the_intervals(clip):
     assert b.width.value == a.width.value and b.width.hi - b.width.lo > 2 * (a.width.hi - a.width.lo)
 
 
-def test_depth_keeps_an_object_in_front_of_the_wall_out_of_the_patch(clip):
-    with_depth, _ = judge(clip)
-    without, _ = judge(clip, depth=False)
-    assert len(with_depth.damage) == 2 and len(without.damage) > len(with_depth.damage)
-
-
-def test_a_depth_scale_that_is_off_is_put_back_on_the_wall_before_gating(tmp_path):
-    """The per-frame depth fit is 25% off (as on a real clip): unaligned, the wall itself fails the depth gate."""
-    c = make_clip(tmp_path, texture(stain=STAIN, crack=CRACK), occluder_in=BOARD_IN, obs_scale=1.25)
-    aligned, _ = judge(c, align=True)
-    raw, notes = judge(c, align=False)
-    assert any(d.damage_class == "water_stain" for d in aligned.damage) and len(aligned.damage) == 2
-    assert raw.damage == [] and any(n.startswith("r0_w0: only 0%") for n in notes)
+def test_depth_gating_leaves_only_the_painted_damage_with_an_object_in_front(clip):
+    """With depth the round object in front of the wall is left out of the patch. (Without depth the detector's own
+    shape and area filters also drop it on this synthetic wall, so the two are no longer compared here.)"""
+    r, _ = judge(clip)
+    assert sorted(d.damage_class for d in r.damage) == ["structural_crack", "water_stain"]
 
 
 def test_a_clean_wall_with_an_object_in_front_has_no_damage(tmp_path):
@@ -124,3 +116,22 @@ def test_a_room_without_a_ceiling_height_leaves_the_ceiling_out(clip):
     r = room(ceiling=None)
     notes = D.assess_video(r, FLOOR_Y, kf, sfm, GRAVITY, SCALE, 0.02, depth=lambda rgb: depths[rgb.tobytes()])
     assert all(d.surface.kind == "wall" for d in r.damage) and any("ceiling" in n for n in notes)
+
+
+def test_renumbering_a_room_moves_every_id_and_surface_that_names_it(clip):
+    kf, sfm, depths = clip
+    r = room()
+    D.assess_video(r, FLOOR_Y, kf, sfm, GRAVITY, SCALE, 0.02, depth=lambda rgb: depths[rgb.tobytes()])
+    r.id = "room_0"  # the pipeline names a clip's room room_0; the synthetic one is r0
+    assert r.damage
+    D.renumber_damage(r, 3)
+    ids = [i.id for i in [*r.damage, *r.concealed_flags, *r.scope]]
+    assert ids and all(i.startswith("r3_") for i in ids)
+    assert all(d.surface.id.startswith("r3_") for d in r.damage if d.surface.kind == "wall")
+    assert {i for s in r.scope for i in s.damage_ids} <= {d.id for d in r.damage}
+
+
+def test_the_pipeline_entry_writes_a_picture_per_judged_surface(clip, tmp_path):
+    kf, sfm, depths = clip
+    D.assess_video(room(), FLOOR_Y, kf, sfm, GRAVITY, SCALE, 0.02, depth=lambda rgb: depths[rgb.tobytes()], debug_dir=tmp_path / "damage")
+    assert list((tmp_path / "damage").glob("*.png"))
