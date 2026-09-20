@@ -164,7 +164,9 @@ def test_two_room_plan_states_adjacency_footprint_and_drift(tmp_path):
     assert st.footprint.value == pytest.approx(28.0, rel=0.05)
     assert st.overlaps == []
     assert any(ln.other is not None and ln.gap < 0.3 for ln in st.links), "the doorway should link the rooms"
-    assert "not corrected" in st.drift and "Ablation" in st.drift and "m2" in st.drift
+    assert "Drift is corrected by a pose graph" in st.drift and "Ablation" in st.drift and "m2" in st.drift
+    off = run(_two_rooms(tmp_path / "cap2"), tmp_path / "off", replicates=3, debug=False, correct_drift=False)
+    assert "not corrected" in off.stitching.drift and len(off.rooms) == 2
 
 
 def test_plan_polygon_is_counter_clockwise_and_not_mirrored(rect_capture, tmp_path):
