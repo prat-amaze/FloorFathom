@@ -23,6 +23,7 @@ from typing import Callable
 import numpy as np
 
 from .anchor import REFERENCE_LENGTH_M, VIDEO_STRIP_COLOUR, estimate_anchor, track_strip
+from .damage_video import assess_video, cached_depth, renumber_damage
 from .estimate import Params, estimate, make_grid
 from .io_video import extract_keyframes
 from .points_video import build_dense_cloud, to_cloud
@@ -149,8 +150,6 @@ def _renumber(room: RoomPlan, k: int) -> None:
         w.id = w.id.replace("r0_", f"r{k}_", 1)
     for o in room.openings:
         o.id, o.wall_id = o.id.replace("r0_", f"r{k}_", 1), o.wall_id.replace("r0_", f"r{k}_", 1)
-    from .damage_video import renumber_damage
-
     renumber_damage(room, k)
 
 
@@ -218,14 +217,17 @@ def run_clip(
         return plan
 
     stride = max(1, int(sfm.registered.sum()) // TARGET_DENSE_FRAMES)
-    dense_stamp = f"{sfm_stamp}:depth{DEPTH_LONG_SIDE}:stride{stride}:chunks{N_CHUNKS}"
-    if depth is None:  # a caller-supplied depth function is never cached: it may differ between calls
+    dense_stamp = f"{sfm_stamp}:depth{DEPTH_LONG_SIDE}:stride{stride}:chunks{N_CHUNKS}:depthcache"
+    # the dense pass and the damage step share one set of depth maps on disk; a caller-supplied depth function
+    # is never cached: it may differ between calls
+    dm = cached_depth(_default_depth(), work / f"depth{DEPTH_LONG_SIDE}") if depth is None else depth
+    if depth is None:
         dense = _load_or_run(
             work / "dense.pkl", dense_stamp,
-            lambda: build_dense_cloud(kf, sfm, _default_depth(), n_chunks=N_CHUNKS, frame_stride=stride),
+            lambda: build_dense_cloud(kf, sfm, dm, n_chunks=N_CHUNKS, frame_stride=stride),
         )
     else:
-        dense = build_dense_cloud(kf, sfm, depth, n_chunks=N_CHUNKS, frame_stride=stride)
+        dense = build_dense_cloud(kf, sfm, dm, n_chunks=N_CHUNKS, frame_stride=stride)
     if dense is None:
         plan = _no_plan(name, time.perf_counter() - t0, seed, ["dense_cloud_failed"] + sfm.flags, n_keyframes=len(kf))
         _write(plan, out)
@@ -272,11 +274,8 @@ def run_clip(
 
         d.models = [f"{DEPTH}@{REGISTRY[DEPTH].revision[:10]}"]
     if assess_damage and ref.floor is not None and plan.rooms:  # before stitching: damage is in each clip's own room frame
-        from .damage_video import assess_video
-
-        dm = depth or _default_depth()
         for room in plan.rooms:
-            d.notes += [f"{room.id}: {n}" for n in assess_video(room, float(ref.floor.y), kf, sfm, rotation, scale, rel, dm, debug_dir=out / "debug" / "damage")]
+            d.notes += [f"{room.id}: {n}" for n in assess_video(room, float(ref.floor.y), kf, sfm, rotation, scale, rel, dm, debug_dir=out / "debug" / "damage", frames=set(dense.frame_ratio))]
         d.notes.append("Damage classes, concealed-damage rules and scope actions are our own definitions, tuned on synthetic surfaces; no real damage was available to check them (README).")
     _write(plan, out)
     return plan
