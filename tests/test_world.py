@@ -7,7 +7,7 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from floorfathom.sfm import SfmResult
-from floorfathom.world import estimate_gravity
+from floorfathom.world import estimate_gravity, refine_gravity
 
 UP = np.array([0.0, 1.0, 0.0])
 
@@ -92,3 +92,27 @@ def test_tilted_camera_cue_is_flagged_not_trusted():
     sfm.cam_to_world = np.repeat((q @ look_x @ roll)[None], len(sfm.cam_to_world), axis=0)
     g = estimate_gravity(sfm)
     assert "gravity_uncertain" in g.flags
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_refine_gravity_removes_a_tilt_of_several_degrees(seed):
+    """A rough alignment that is 7 and 3 degrees off (the size seen on real clips) is corrected from the
+    floor and ceiling, and the vertical walls, which were not used, then stand upright."""
+    pts = _room_points(np.random.default_rng(seed))
+    q = Rotation.from_euler("xz", (7.0, 3.0), degrees=True).as_matrix()
+    tilted, true_up = pts @ q.T, q @ UP
+    result = refine_gravity(tilted)
+    off = np.degrees(np.arccos(np.clip((result.rotation @ true_up) @ UP, -1, 1)))
+    assert off < 1.0, f"still {off:.2f} deg off"
+    assert result.flags == [] and result.n_horizontal_planes == 2
+    assert result.wall_tilt_deg is not None and result.wall_tilt_deg < 1.5
+    assert result.correction_deg == pytest.approx(7.6, abs=1.0)  # 7 deg about x and 3 about z combined
+
+
+def test_refine_gravity_flags_a_cloud_without_floor_or_ceiling():
+    rng = np.random.default_rng(0)
+    t, h = rng.uniform(0, 1, 800), rng.uniform(0, 2.6, 800)
+    walls = np.array([[t_ * 5, h_, 0.0] if k % 2 == 0 else [0.0, h_, t_ * 4] for k, (t_, h_) in enumerate(zip(t, h))])
+    result = refine_gravity(walls + rng.normal(0, 0.01, walls.shape))
+    assert result.flags  # it says it could not measure "up", whether it found no plane or a doubtful one
+    assert np.allclose(result.rotation, np.eye(3))  # and no change is applied
