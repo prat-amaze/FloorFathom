@@ -34,7 +34,14 @@ RULES = {
     "core_margin": 0.10,  # m: skirting, cornices and edge misregistration are not judged
     "sigma_smooth": (0.008, 0.03),  # m, blur of the blob route: fine, and coarse for speckled clusters
     "noise_floor": (1.2, 0.8, 0.8),  # smallest noise assumed per Lab channel
-    "crack_min_length": 0.05,
+    "crack_min_length": 0.08,
+    "crack_min_contrast": 8.0,  # lightness below the surface: fainter ridges are texture, not cracks
+    "max_area_stain": 1.0,  # m2: a stain, soot or mould can be this large ...
+    "max_area_other": 0.25,  # ... anything else this large is an object or a panel, not damage
+    "max_share": 0.35,  # of the surface's judged area: larger than this is a different surface, not damage
+    "rect_fill": 0.88,  # a region this rectangular and axis-aligned is a door, panel or screen (an ellipse fills 0.79)
+    "rect_axis_deg": 3.0,
+    "rect_min_side": 0.08,
     "crack_max_breadth": 0.02,
     "crack_ridge_z": 5.0,
     "joint_straight": 0.006,  # m rms off a straight line ...
@@ -189,6 +196,19 @@ def _is_lighting(f: dict) -> bool:
     return f["edge_cm"] >= RULES["lighting_edge_cm"] and abs(f["dL"]) < 12 and max(abs(f["da"]), abs(f["db"])) < 2.5
 
 
+def _is_object(mk: np.ndarray, f: dict, cls: str, mpp: float, core: np.ndarray) -> bool:
+    """Doors, wardrobes, screens, lamps and panels sit on or against a wall and are not damage."""
+    cap = RULES["max_area_stain"] if cls in ("water_stain", "soot_or_fire", "mould") else RULES["max_area_other"]
+    if f["area"] > cap or mk.sum() > RULES["max_share"] * core.sum():
+        return True
+    pts = np.stack(np.nonzero(mk)[::-1], axis=1).astype(np.float32)
+    (_c, (rw, rh), ang) = cv2.minAreaRect(pts)
+    if min(rw, rh) * mpp < RULES["rect_min_side"] or rw * rh == 0:
+        return False
+    axis = min(ang % 90, 90 - ang % 90)
+    return bool(mk.sum() / (rw * rh) >= RULES["rect_fill"] and axis <= RULES["rect_axis_deg"])
+
+
 def _blob_features(mask, lab, bg, lsm, mpp) -> dict:
     inside = mask
     res = lab - bg
@@ -302,8 +322,12 @@ def _relief_regions(patch: Patch, valid: np.ndarray, core: np.ndarray, mpp: floa
     return out
 
 
-def detect(patch: Patch, scale_rel_sigma: float | None = None) -> list[Found]:
-    """Damage regions of one patch. ``scale_rel_sigma`` is the patch scale's relative error (default: RULES)."""
+def detect(patch: Patch, scale_rel_sigma: float | None = None, report_unclassified: bool = True) -> list[Found]:
+    """Damage regions of one patch. ``scale_rel_sigma`` is the patch scale's relative error (default: RULES).
+
+    ``report_unclassified=False`` drops regions that fit no class: use it where nothing but colour says what is an
+    object (no depth to mask furniture), so that only regions that look like a known kind of damage are reported.
+    """
     rel = RULES["scale_rel_sigma"] if scale_rel_sigma is None else scale_rel_sigma
     mpp = patch.m_per_px
     lab = cv2.cvtColor(np.clip(patch.rgb.astype(np.float32), 0, 1), cv2.COLOR_RGB2Lab)
@@ -344,11 +368,14 @@ def detect(patch: Patch, scale_rel_sigma: float | None = None) -> list[Found]:
             if ln >= RULES["crack_min_length"] and breadth <= 0.05 and ln >= 5 * breadth and f["db"] < 4:  # a line, not a blob
                 if _is_joint(*_line_stats(mk, mpp)):
                     continue
-                cls = "structural_crack" if f["dL"] <= -4 else "other_anomaly"
+                if f["dL"] > -RULES["crack_min_contrast"]:
+                    continue  # too faint to be a crack; a light line is not damage we classify
                 ev = f"thin dark line, {ln * 100:.0f} cm long, {breadth * 100:.1f} cm wide, dL {f['dL']:+.0f}"
-                found.append(_make(mk, cls, 0.6 if cls == "structural_crack" else 0.3, ev, alts, mpp, rel))
+                found.append(_make(mk, "structural_crack", 0.6, ev, alts, mpp, rel))
                 continue
             cls, conf, ev = _classify(f)
+            if _is_object(mk, f, cls, mpp, core) or (cls == "other_anomaly" and not report_unclassified):
+                continue
             ring = cv2.dilate(mk.astype(np.uint8), np.ones((2 * r + 1, 2 * r + 1), np.uint8)).astype(bool) & ~mk
             if ring.any() and (~valid[ring]).mean() > 0.3:
                 conf *= 0.7
@@ -358,6 +385,8 @@ def detect(patch: Patch, scale_rel_sigma: float | None = None) -> list[Found]:
         if taken(mk, 0.5):
             continue
         contrast = float(np.median(lab[..., 0][core]) - lab[..., 0][mk].mean())
+        if contrast < RULES["crack_min_contrast"]:
+            continue
         found.append(_make(mk, "structural_crack", 0.6, f"thin dark ridge, lightness {contrast:.0f} below the surface", [], mpp, rel))
     found.sort(key=lambda f: (np.nonzero(f.mask)[0].min(), np.nonzero(f.mask)[1].min()))
     return found
