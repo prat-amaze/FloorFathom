@@ -26,6 +26,12 @@ from .io_video import Keyframes
 from .sfm import SfmResult
 from .uncertainty import jackknife_scale
 
+# The reference ruler of capture_protocol.md, shared by the video and photo tiers: the yellow body,
+# end to end, measured with a tape on 2026-09-20 (the printed scale is 30 cm, the body is longer).
+REFERENCE_LENGTH_M = 0.316
+STRIP_COLOUR = "yellow"  # for stills (photo tier)
+VIDEO_STRIP_COLOUR = "yellow_video"  # the same ruler as video frames render it
+
 MIN_FRAMES = 8
 MIN_RAY_ANGLE_DEG = 5.0
 MAX_RESIDUAL_PX = 3.0
@@ -50,15 +56,26 @@ class Anchor:
     flags: list[str] = field(default_factory=list)
 
 
-def find_strip(bgr: np.ndarray, near: tuple[float, float] | None = None, min_length_px: float = 40.0):
-    """Two ends ((u, v) top, (u, v) bottom) of a white, elongated, roughly vertical strip, or None.
+def _colour_mask(hsv: np.ndarray, colour: str) -> np.ndarray:
+    h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]  # OpenCV hue runs 0-179, so yellow is about 30
+    if colour == "white":  # bright and unsaturated
+        return (s < 60) & (v > 150)
+    if colour == "yellow":  # stills: the ruler is hue 32-40, a wooden door 13-24
+        return (h >= 28) & (h <= 42) & (s > 90) & (v > 150)
+    if colour == "yellow_video":  # video renders the same ruler hue 23-27 and the door 11-15; stills' range would miss it
+        return (h >= 20) & (h <= 45) & (s > 90) & (v > 140)
+    raise ValueError(f"unknown strip colour {colour!r}")
 
-    White here means bright and unsaturated, which separates it from a wooden door; large white
-    walls fail on size and shape, and blobs touching the image border may be cut off.
+
+def find_strip(bgr: np.ndarray, near: tuple[float, float] | None = None, min_length_px: float = 40.0, colour: str = "white"):
+    """Two ends ((u, v) top, (u, v) bottom) of an elongated, roughly vertical strip of one colour, or None.
+
+    White means bright and unsaturated, which separates it from a wooden door; yellow is picked by
+    hue, which also leaves out white door frames and walls. Large patches of the colour fail on
+    size and shape, and blobs touching the image border may be cut off.
     """
     h, w = bgr.shape[:2]
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    mask = ((hsv[..., 1] < 60) & (hsv[..., 2] > 150)).astype(np.uint8)
+    mask = _colour_mask(cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV), colour).astype(np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
     best, best_score = None, -np.inf
@@ -91,14 +108,22 @@ def find_strip(bgr: np.ndarray, near: tuple[float, float] | None = None, min_len
     return best
 
 
-def track_strip(kf: Keyframes, sfm: SfmResult, max_misses: int = 4) -> list[SegmentObs]:
-    """Follow the strip through the registered keyframes in time order."""
+def track_strip(
+    kf: Keyframes, sfm: SfmResult, max_misses: int = 4, until_s: float | None = None, colour: str = "white"
+) -> list[SegmentObs]:
+    """Follow the strip through the registered keyframes in time order.
+
+    ``until_s`` stops the search after that many seconds: the protocol puts the strip move at the
+    start of the clip, and a white door frame later in the walk must not be taken for the strip.
+    """
     obs: list[SegmentObs] = []
     near, misses = None, 0
     for i in range(len(kf)):
+        if until_s is not None and kf.time_s[i] > until_s:
+            break
         if not sfm.registered[i]:
             continue
-        found = find_strip(cv2.imread(str(kf.directory / kf.names[i])), near)
+        found = find_strip(cv2.imread(str(kf.directory / kf.names[i])), near, colour=colour)
         if found is None:
             misses += 1
             if obs and misses > max_misses:
