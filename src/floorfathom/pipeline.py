@@ -61,7 +61,7 @@ def _lidar_stitching(raw, raw_traj, plan: CapturePlan, params: Params, drift, ab
     return describe(plan.rooms, [], [], text)
 
 
-def _lidar_damage(scan, traj, drift, plan: CapturePlan) -> list[str]:
+def _lidar_damage(scan, traj, drift, plan: CapturePlan, debug_dir: Path | None = None) -> list[str]:
     """Damage, concealed-damage flags and scope of every room, from the scan's own RGB and depth frames."""
     from .assess import assess_room
     from .lidar_frames import LidarFrames
@@ -76,7 +76,7 @@ def _lidar_damage(scan, traj, drift, plan: CapturePlan) -> list[str]:
             ch = room.ceiling_height.value
             ceiling_y = None if ch is None else floor_y + ch
             others = [r for r in plan.rooms if r is not room]
-            notes += [f"{room.id}: {n}" for n in assess_room(room, floor_y, ceiling_y, frames.for_room(room), others)]
+            notes += [f"{room.id}: {n}" for n in assess_room(room, floor_y, ceiling_y, frames.for_room(room), others, debug_dir=debug_dir)]
     finally:
         frames.close()
     return notes
@@ -127,7 +127,7 @@ def run_lidar(
     )
     plan.stitching = _lidar_stitching(raw, raw_traj, plan, params, drift, drift_ablation, why_not)
     if assess_damage:
-        plan.diagnostics.notes += _lidar_damage(scan, traj, drift, plan)
+        plan.diagnostics.notes += _lidar_damage(scan, traj, drift, plan, out / "debug" / "damage" if debug else None)
         plan.diagnostics.notes.append(
             "Damage classes, concealed-damage rules and scope actions are our own definitions, tuned on synthetic surfaces; "
             "no real damage was available to check them (README)."
