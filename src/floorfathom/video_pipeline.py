@@ -149,6 +149,9 @@ def _renumber(room: RoomPlan, k: int) -> None:
         w.id = w.id.replace("r0_", f"r{k}_", 1)
     for o in room.openings:
         o.id, o.wall_id = o.id.replace("r0_", f"r{k}_", 1), o.wall_id.replace("r0_", f"r{k}_", 1)
+    from .damage_video import renumber_damage
+
+    renumber_damage(room, k)
 
 
 def run_video(capture: str | Path, out: str | Path, **kw) -> CapturePlan:
@@ -192,6 +195,7 @@ def run_clip(
     depth: Depth | None = None,
     params: Params | None = None,
     keyframe_step_s: float = KEYFRAME_STEP_S,
+    assess_damage: bool = True,
     **_ignored,
 ) -> CapturePlan:
     """Plan for one clip. ``scale`` (metres per SfM unit) and its relative sigma override the depth model's;
@@ -267,5 +271,12 @@ def run_clip(
         from .models import DEPTH, REGISTRY
 
         d.models = [f"{DEPTH}@{REGISTRY[DEPTH].revision[:10]}"]
+    if assess_damage and ref.floor is not None and plan.rooms:  # before stitching: damage is in each clip's own room frame
+        from .damage_video import assess_video
+
+        dm = depth or _default_depth()
+        for room in plan.rooms:
+            d.notes += [f"{room.id}: {n}" for n in assess_video(room, float(ref.floor.y), kf, sfm, rotation, scale, rel, dm, debug_dir=out / "debug" / "damage")]
+        d.notes.append("Damage classes, concealed-damage rules and scope actions are our own definitions, tuned on synthetic surfaces; no real damage was available to check them (README).")
     _write(plan, out)
     return plan
