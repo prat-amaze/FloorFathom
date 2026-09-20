@@ -25,9 +25,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from floorfathom.depth import DepthEstimator
-from floorfathom.estimate import Params, estimate
+from floorfathom import layout as L
+from floorfathom.estimate import make_grid
 from floorfathom.io_photos import discover_rooms, load_photo_set
 from floorfathom.layout import BAND_HI, BAND_LO
+from floorfathom.photo_layout import outline_from_segments, wall_segments
 from floorfathom.photo_pose import register_rotations
 from floorfathom.photo_scene import build_scene
 
@@ -61,16 +63,15 @@ class CachedDepth:
         return z
 
 
-def plot(room: str, scene, est, path: Path) -> None:
+def plot(room: str, scene, outline, path: Path) -> None:
     fig, ax = plt.subplots(figsize=(7, 7))
     p = scene.cloud.points
     h = p[:, 1] - scene.floor_y
     band = p[(h > BAND_LO) & (h < BAND_HI)]
     ax.scatter(band[:, 0], band[:, 2], s=0.3, c="0.55", label="wall band")
     ax.scatter(scene.traj_xz[:, 0], scene.traj_xz[:, 1], s=1, c="tab:blue", label="fan")
-    for r in est.rooms:
-        poly = np.vstack([r.outline.polygon, r.outline.polygon[:1]])
-        ax.plot(poly[:, 0], poly[:, 1], "r-", lw=1.5)
+    for e in outline.edges:
+        ax.plot([e.p0[0], e.p1[0]], [e.p0[1], e.p1[1]], "r-" if e.supported else "m--", lw=2)
     ax.plot(0, 0, "k^")
     ax.set_aspect("equal")
     ax.set_title(f"{room}: {len(scene.used)} photos fused")
@@ -105,16 +106,25 @@ def main() -> None:
         print(f"   camera height {-scene.floor_y:.2f} m, tilt {scene.tilt_deg:.1f} deg, floor support {scene.floor_support:.2f},"
               f" {len(scene.cloud)} points, scene flags {scene.flags}")
         print(f"   depth scale per photo {np.round(scene.scales, 2).tolist()} (spread {scene.scale_spread:.2f})")
-        est = estimate(scene.cloud.points, scene.traj_xz, Params())
-        print(f"   rooms found: {len(est.rooms)}")
-        for r in est.rooms:
-            ch = r.ceiling_height
-            ce = "none" if ch is None else f"{ch:.2f} m ({(ch / truth['ceiling'] - 1) * 100:+.1f}% vs {truth['ceiling']:.2f})"
-            lengths = sorted(e.length for e in r.outline.edges)
-            print(f"   - area {r.area:.2f} m2, ceiling {ce}, {len(r.outline.edges)} walls, {len(r.openings)} openings, flags {r.flags}")
-            print(f"     wall lengths {[round(x, 2) for x in lengths]}")
-            print(f"     tape        {truth['walls']}")
-        plot(room, scene, est, args.out / f"{room}.png")
+        grid = make_grid(scene.cloud.points, scene.traj_xz)
+        segs = wall_segments(scene.cloud.points)
+        outline = outline_from_segments(segs, grid)
+        print(f"   {len(segs)} wall segments; outline: {'none' if outline is None else str(len(outline.edges)) + ' edges'}")
+        if outline is None:
+            continue
+        sup = sorted(e.length for e in outline.edges if e.supported)
+        uns = sorted(e.length for e in outline.edges if not e.supported)
+        area = abs(L.signed_area(outline.polygon))
+        print(f"   supported edges {[round(x, 2) for x in sup]}; unsupported (unseen) {[round(x, 2) for x in uns]}; area {area:.2f} m2")
+        tape = truth["walls"]
+        print(f"   tape walls      {tape}")
+        if len(sup) == len(tape):
+            k = float(np.dot(sup, tape) / np.dot(sup, sup))  # one scale for the room, fitted to the tape
+            err = [k * a / b - 1 for a, b in zip(sup, tape)]
+            print(f"   scale the room needs: x{k:.2f}; after that scale the walls are off by {[f'{e * 100:+.0f}%' for e in err]}")
+        else:
+            print("   edge count differs from the tape walls, so no per-wall comparison")
+        plot(room, scene, outline, args.out / f"{room}.png")
 
 
 if __name__ == "__main__":
