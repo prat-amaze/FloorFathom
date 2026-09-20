@@ -55,15 +55,21 @@ def render_depth(walls, height: float, position, c2w: np.ndarray, w: int = W, h:
 
 
 class FakeDepth:
-    """Stand-in for the depth model. The image index is read back from pixel (0, 0, 0)."""
+    """Stand-in for the depth model. The image index is read back from pixel (0, 0, 0).
+
+    ``bias`` is one scale factor for every image, or a list with one factor per image (the real model's
+    scale differs from photo to photo).
+    """
 
     def __init__(self, walls, height, position, c2ws, noise=0.0, bias=1.0, seed=0):
         self.args = (walls, height, position)
-        self.c2ws, self.noise, self.bias = c2ws, noise, bias
+        self.c2ws, self.noise = c2ws, noise
+        self.bias = list(bias) if np.ndim(bias) else [bias] * len(c2ws)
         self.rng = np.random.default_rng(seed)
 
     def __call__(self, rgb: np.ndarray) -> np.ndarray:
-        z = render_depth(*self.args, self.c2ws[int(rgb[0, 0, 0])]) * self.bias
+        i = int(rgb[0, 0, 0])
+        z = render_depth(*self.args, self.c2ws[i]) * self.bias[i]
         z = np.where(np.isfinite(z), z * (1 + self.noise * self.rng.standard_normal(z.shape)), 0.0)
         return z.astype(np.float32)
 
