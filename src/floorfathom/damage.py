@@ -131,9 +131,9 @@ def _extent(mask: np.ndarray, mpp: float) -> tuple[float, float, float, float, l
     return width, height, length, mask.sum() * mpp * mpp, [(float(x), float(y)) for x, y in approx]
 
 
-def _interval(base: float, alts: list[float], mpp: float) -> tuple[float, float, float]:
+def _interval(base: float, alts: list[float], mpp: float, scale_rel: float) -> tuple[float, float, float]:
     lo, hi = min([base] + alts), max([base] + alts)
-    rel = RULES["scale_rel_sigma"] * 1.96
+    rel = scale_rel * 1.96
     return base, max(0.0, lo * (1 - rel) - mpp), hi * (1 + rel) + mpp
 
 
@@ -302,7 +302,9 @@ def _relief_regions(patch: Patch, valid: np.ndarray, core: np.ndarray, mpp: floa
     return out
 
 
-def detect(patch: Patch) -> list[Found]:
+def detect(patch: Patch, scale_rel_sigma: float | None = None) -> list[Found]:
+    """Damage regions of one patch. ``scale_rel_sigma`` is the patch scale's relative error (default: RULES)."""
+    rel = RULES["scale_rel_sigma"] if scale_rel_sigma is None else scale_rel_sigma
     mpp = patch.m_per_px
     lab = cv2.cvtColor(np.clip(patch.rgb.astype(np.float32), 0, 1), cv2.COLOR_RGB2Lab)
     valid = patch.valid.astype(bool)
@@ -321,7 +323,7 @@ def detect(patch: Patch) -> list[Found]:
 
     if patch.relief is not None:
         for mk, cls, ev in _relief_regions(patch, valid, core, mpp):
-            found.append(_make(mk, cls, 0.6, ev, [], mpp))
+            found.append(_make(mk, cls, 0.6, ev, [], mpp, rel))
             claimed.append(mk)
     thr = RULES["z_threshold"]
     for zs in _zmaps(lab, bg, valid, core, mpp):
@@ -344,24 +346,24 @@ def detect(patch: Patch) -> list[Found]:
                     continue
                 cls = "structural_crack" if f["dL"] <= -4 else "other_anomaly"
                 ev = f"thin dark line, {ln * 100:.0f} cm long, {breadth * 100:.1f} cm wide, dL {f['dL']:+.0f}"
-                found.append(_make(mk, cls, 0.6 if cls == "structural_crack" else 0.3, ev, alts, mpp))
+                found.append(_make(mk, cls, 0.6 if cls == "structural_crack" else 0.3, ev, alts, mpp, rel))
                 continue
             cls, conf, ev = _classify(f)
             ring = cv2.dilate(mk.astype(np.uint8), np.ones((2 * r + 1, 2 * r + 1), np.uint8)).astype(bool) & ~mk
             if ring.any() and (~valid[ring]).mean() > 0.3:
                 conf *= 0.7
                 ev += "; touches an unobserved area, extent may be cut"
-            found.append(_make(mk, cls, conf, ev, alts, mpp))
+            found.append(_make(mk, cls, conf, ev, alts, mpp, rel))
     for mk in _cracks(lab[..., 0], core, mpp):
         if taken(mk, 0.5):
             continue
         contrast = float(np.median(lab[..., 0][core]) - lab[..., 0][mk].mean())
-        found.append(_make(mk, "structural_crack", 0.6, f"thin dark ridge, lightness {contrast:.0f} below the surface", [], mpp))
+        found.append(_make(mk, "structural_crack", 0.6, f"thin dark ridge, lightness {contrast:.0f} below the surface", [], mpp, rel))
     found.sort(key=lambda f: (np.nonzero(f.mask)[0].min(), np.nonzero(f.mask)[1].min()))
     return found
 
 
-def _make(mask: np.ndarray, cls: str, conf: float, ev: str, alt_masks: list[np.ndarray], mpp: float) -> Found:
+def _make(mask: np.ndarray, cls: str, conf: float, ev: str, alt_masks: list[np.ndarray], mpp: float, rel: float) -> Found:
     w, h, ln, ar, outline = _extent(mask, mpp)
     alts = [_extent(m, mpp)[:4] for m in alt_masks]
     return Found(
@@ -369,9 +371,9 @@ def _make(mask: np.ndarray, cls: str, conf: float, ev: str, alt_masks: list[np.n
         damage_class=cls,
         confidence=float(conf),
         evidence=ev,
-        width=_interval(w, [a[0] for a in alts], mpp),
-        height=_interval(h, [a[1] for a in alts], mpp),
-        length=_interval(ln, [a[2] for a in alts], mpp),
-        area=_interval(ar, [a[3] for a in alts], mpp * ln),
+        width=_interval(w, [a[0] for a in alts], mpp, rel),
+        height=_interval(h, [a[1] for a in alts], mpp, rel),
+        length=_interval(ln, [a[2] for a in alts], mpp, rel),
+        area=_interval(ar, [a[3] for a in alts], mpp * ln, rel),
         outline=outline,
     )
