@@ -3,8 +3,8 @@
 The 5 cm grid layout of the LiDAR tier needs walls that are thin and dense; monocular depth gives
 walls 5-10 cm thick that are sparse where nothing was seen. Here walls are fitted as planes instead:
 
-  1. RANSAC finds vertical planes (normal within 8 degrees of horizontal) in a slab of points at eye level,
-     where the floor, the ceiling and low furniture do not reach,
+  1. RANSAC finds vertical planes (normal within 8 degrees of horizontal) in a slab of points from just below
+     to well above the camera, where the floor, the ceiling and most furniture do not reach,
   2. a plane also catches stray points that happen to lie near it, so its inliers are cut along the line into
      dense runs (5 cm bins, gaps up to 25 cm closed) and only runs of at least 0.6 m are kept,
   3. the line is refitted to the points of the runs, and parallel planes on the same wall are merged.
@@ -22,9 +22,10 @@ from scipy import ndimage
 
 from . import layout as L
 from .layout import fit_line
-from .photo_scene import EYE_SLAB
 from .ransac import fit_planes
 
+WALL_SLAB = (-0.2, 0.8)  # heights relative to the camera (m) whose points are fitted as walls: above most furniture,
+# below the ceiling; provisional, compared on two real rooms only
 MAX_PLANES = 12
 PLANE_THRESH, PLANE_RANGE_SLOPE = 0.05, 0.02  # inlier distance (m) and its growth per metre of range
 PLANE_TILT_DEG = 8.0  # a wall plane's normal is within this of horizontal
@@ -38,6 +39,7 @@ MERGE_ANGLE_DEG, MERGE_OFFSET = 6.0, 0.12  # planes this parallel and this close
 RAY_DEG = 1.0  # the outline is the visible boundary from the station, sampled at this angular step
 RAY_SLACK = 0.5  # a ray still hits a wall this far (m) beyond its observed ends: corners are seldom observed
 MIN_ARC_DEG = 4.0  # a wall owns at least this much of the view to become an edge
+MIN_EDGE, CORNER_CUT = 0.5, 0.9  # edges shorter than this go; up to CORNER_CUT when both neighbours meet nearby (layout.drop_short)
 CORNER_REACH = 1.0  # two walls meet at their line intersection if it is within this (m) of both observed ends
 
 
@@ -96,7 +98,7 @@ def _same_wall(a: WallSegment, b: WallSegment) -> bool:
 def wall_segments(points: np.ndarray, seed: int = 0) -> list[WallSegment]:
     """Vertical wall segments (largest support first) of a cloud with +y up and the camera at the origin."""
     slab = np.asarray(points, float)
-    slab = slab[(slab[:, 1] > EYE_SLAB[0]) & (slab[:, 1] < EYE_SLAB[1])]
+    slab = slab[(slab[:, 1] > WALL_SLAB[0]) & (slab[:, 1] < WALL_SLAB[1])]
     if len(slab) < 500:
         return []
     planes = fit_planes(
@@ -234,6 +236,7 @@ def outline_from_segments(segs: list[WallSegment], grid: L.Grid) -> L.RoomOutlin
         j = (i + 1) % m
         if jump[i] and np.linalg.norm(begin[j] - end[i]) > 0.05:
             edges.append(L.Edge(end[i], begin[j], False, 0.0, None))
+    edges = L.drop_short(L.merge_collinear(edges), min_len=MIN_EDGE, corner_cut=CORNER_CUT)
     polygon = np.array([e.p0 for e in edges])
     if len(polygon) < 3:
         return None
