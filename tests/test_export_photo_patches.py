@@ -16,8 +16,8 @@ def test_every_wall_and_the_ceiling_are_saved_with_their_pixels_and_scale(tmp_pa
     means = {}
     for s in stems:
         z = np.load(tmp_path / f"{s}.npz")
-        assert z["rgb"].dtype == np.uint8 and z["valid"].dtype == bool and float(z["m_per_px"]) == MPP
+        assert z["rgb"].dtype == np.float16 and 0 <= z["rgb"].min() and z["rgb"].max() <= 1 and z["valid"].dtype == bool and float(z["m_per_px"]) == MPP
         assert z["valid"].mean() > 0.3 and (tmp_path / f"{s}.png").exists()
         means[str(z["surface"])] = z
     stained = means["r0_w0"]  # the stain sits at s 1.8 m, h 1.2 m, i.e. column 180, row 120 at 1 cm per pixel
-    assert stained["valid"][120, 180] and stained["rgb"][120, 180, 2] < 0.8 * np.median(means["r0_w1"]["rgb"][..., 2])  # yellow-brown: little blue
+    assert stained["valid"][120, 180] and stained["rgb"][120, 180, 2] < 0.8 * np.median(means["r0_w1"]["rgb"][..., 2].astype(np.float32))  # yellow-brown: little blue
