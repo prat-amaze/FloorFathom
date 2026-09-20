@@ -25,6 +25,9 @@ class Cloud:
     points: np.ndarray  # (M, 3) float32, world metres
     chunk: np.ndarray  # (M,) int16, which contiguous frame chunk each point came from
     n_chunks: int
+    # video only: metres per SfM unit as measured inside each chunk (nan where a chunk has none),
+    # so a replicate that leaves chunks out can re-derive the scale from the chunks it keeps
+    chunk_scale: np.ndarray | None = None
 
     def __len__(self) -> int:
         return len(self.points)
