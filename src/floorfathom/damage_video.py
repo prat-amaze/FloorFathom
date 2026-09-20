@@ -17,9 +17,10 @@ Unrolling surfaces, detection, classes, concealed-damage flags and scope items a
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Iterable, Sequence
 
 import cv2
 import numpy as np
@@ -63,6 +64,24 @@ def _lattice(plane: S.Plane) -> np.ndarray:
     return plane.origin[None, :] + s.reshape(-1, 1) * plane.u[None, :] + h.reshape(-1, 1) * plane.v[None, :]
 
 
+def cached_depth(depth: Depth, cache_dir: Path) -> Depth:
+    """``depth`` with its maps kept on disk, one file per frame (md5 of the pixels), so that a frame is never run through
+    the model twice, in a later run or by a later stage. The maps are stored as float16 and always read back from disk,
+    so a cold run and a cached run see the same numbers. Use one folder per depth function and input size."""
+    cache_dir = Path(cache_dir)
+
+    def cached(rgb: np.ndarray) -> np.ndarray:
+        f = cache_dir / f"{hashlib.md5(np.ascontiguousarray(rgb).tobytes()).hexdigest()}.npy"
+        if not f.exists():
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            tmp = f.with_suffix(".part.npy")  # written whole, then renamed, so a run that died leaves no half file
+            np.save(tmp, np.asarray(depth(rgb), dtype=np.float16))
+            tmp.replace(f)
+        return np.load(f).astype(np.float32)
+
+    return cached
+
+
 @dataclass
 class Views:
     """The clip's keyframes as ``surfaces.Frame`` objects, loaded on demand and only the ones a surface needs."""
@@ -74,6 +93,7 @@ class Views:
     depth: Depth | None = None
     cache_size: int = 48
     align_depth: bool = True
+    candidates: frozenset[int] | None = None  # only these keyframes may be used (the ones whose depth is already known)
     _frames: dict[int, S.Frame] = field(default_factory=dict)
 
     def _rgb(self, i: int) -> np.ndarray:
@@ -113,6 +133,10 @@ class Views:
         """Keyframes that together see ``plane`` best: greedy on the gain in per-point view quality."""
         pts = _lattice(plane)
         idx = np.nonzero(self.sfm.registered)[0]
+        if self.candidates is not None:
+            idx = np.array([i for i in idx if i in self.candidates], dtype=int)
+        if len(idx) == 0:
+            return []
         fx, fy, cx, cy = self.sfm.intrinsics
         w_img, h_img = self.sfm.image_size
         quality = np.zeros((len(idx), len(pts)))
@@ -182,15 +206,17 @@ def assess_video(
     depth: Depth | None = None,
     others: Sequence[RoomPlan] = (),
     debug_dir: Path | None = None,
+    frames: Iterable[int] | None = None,
 ) -> list[str]:
     """Fill ``room.damage``, ``room.concealed_flags`` and ``room.scope`` for one clip's room; returns notes.
 
     ``rotation`` and ``scale`` are the ones that took the SfM reconstruction into the plan's frame, ``floor_y`` is
     the floor height in that frame and ``scale_rel_sigma`` the scale's relative standard error. ``depth`` is the
     depth model (RGB in, z-depth out): with it, what stands in front of a surface is left out of its patch.
-    ``debug_dir`` gets one picture per surface with its regions outlined.
+    ``debug_dir`` gets one picture per surface with its regions outlined. ``frames`` limits the keyframes that may be
+    used, to those whose depth is already cached (the dense pass's): a run then adds no depth-model time of its own.
     """
-    views = Views(kf, sfm, world_poses(sfm, rotation, scale), scale, depth)
+    views = Views(kf, sfm, world_poses(sfm, rotation, scale), scale, depth, candidates=None if frames is None else frozenset(int(i) for i in frames))
     ceiling_y = None if room.ceiling_height.value is None else floor_y + room.ceiling_height.value
     return assess_room(
         room, floor_y, ceiling_y, views.frames_for, others, KINDS, use_relief=False, scale_rel_sigma=scale_rel_sigma,
