@@ -69,7 +69,22 @@ where the output lands, known limits. Outputs go to `out/` (git-ignored); clear 
 
 ### Video-tier damage
 
-(owner fills)
+- Part of the video command, no separate step: `uv run floorfathom plan Data/H1.MOV --out out/h1_damage --reference-length-cm 31.6`
+  (one clip is one room; SfM and the depth pass take 10+ minutes, cached in `out/<name>/work/`).
+- Outputs: `plan.json` (per room `damage`, `concealed_flags`, `scope`, sizes in metres with 95% intervals that include the
+  metric scale's error) and `debug/damage/<surface>.png` (each judged wall and the ceiling unrolled from the keyframes, purple
+  where not judged, damage outlined). The notes in `diagnostics` say what could not be judged.
+- Code: `damage_video.py` moves SfM poses into the plan frame, picks about 10 keyframes per wall or ceiling, uses the depth
+  model only to leave out what stands in front of a wall (its scale is aligned to each wall first; never for relief) and calls
+  `assess.assess_room`; `renumber_damage` keeps ids unique when clips become rooms of one property. Not searched: the floor.
+- Dev tools (they read a finished run's folder, so they are not the user command): `scripts/damage_video_clip.py`,
+  `scripts/damage_video_wall.py` (fits one wall from the dense cloud), `scripts/eval_damage_video.py` (synthetic sweep),
+  `scripts/eval_damage_patches.py` (acceptance test on saved real patches in `out/h1_patches`, made with
+  `damage_video_clip.py --save-patches`).
+- Limits: synthetic walls give exact stain sizes and cracks of 3 mm or more; 1-2 mm cracks are missed (the staged 12 x 22 cm
+  hairline crack in H1 was not found). On real H1 the staged 21 x 25 cm leakage mark was found (22 x 16 cm) on a wall fitted by
+  hand, but the plan's own walls are fragments (5 of 19 supported), so walls the room estimator misses are not judged at all.
+  False positives remain on wood grain, door hardware and cabinet edges (a bedroom with no damage still gives a few regions).
 
 ### Photo-tier damage
 
