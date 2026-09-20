@@ -24,10 +24,18 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .ransac import fit_planes
 from .sfm import SfmResult
 
 SEARCH_DEG = 16.0
 AGREE_DEG = 20.0
+PLANE_SEARCH_DEG = 20.0  # refine_gravity looks for floor and ceiling within this angle of the rough up
+MIN_HORIZONTAL_FRAC = 0.04  # a floor or ceiling holds at least this share of a dense video cloud
+PLANES_AGREE_DEG = 4.0  # floor and ceiling normals further apart than this are not trusted together
+MIN_PLANE_SPREAD_M = 0.3  # a real floor or ceiling is an area: its points spread at least this much (std) both ways,
+MIN_PLANE_ASPECT = 0.12  # and the narrow spread is at least this fraction of the wide one. A plane slicing through
+# two vertical walls is two thin lines of points and fails both.
+MAX_CORRECTION_DEG = 15.0  # the rough alignment is never worse than this, so a bigger correction is a bad fit
 
 
 @dataclass
@@ -61,6 +69,61 @@ def layering_score(points: np.ndarray, up: np.ndarray, bin_width: float) -> floa
     counts = np.bincount(np.floor((h - h.min()) / bin_width).astype(np.int64))
     p = counts / counts.sum()
     return float((p * p).sum())
+
+
+@dataclass
+class GravityRefinement:
+    rotation: np.ndarray  # (3, 3), applied after the rough rotation: refined = rotation @ rough_aligned_point
+    correction_deg: float  # how far the planes moved "up" from the rough estimate
+    n_horizontal_planes: int
+    wall_tilt_deg: float | None  # median tilt of the vertical walls after the correction; near 0 when up is right
+    flags: list[str] = field(default_factory=list)
+
+
+def _is_area(inliers: np.ndarray) -> bool:
+    """True when the points of a plane spread over an area, not along a line."""
+    if len(inliers) < 10:
+        return False
+    spread = np.linalg.svd(inliers - inliers.mean(axis=0), compute_uv=False) / np.sqrt(len(inliers))
+    return bool(spread[1] >= MIN_PLANE_SPREAD_M and spread[1] >= MIN_PLANE_ASPECT * spread[0])
+
+
+def refine_gravity(points: np.ndarray, thresh: float = 0.06, seed: int = 0) -> GravityRefinement:
+    """Correct a rough gravity alignment from the floor and ceiling of a dense cloud.
+
+    ``points`` are metres in the rough-aligned frame (up is roughly +y). The floor and ceiling are
+    horizontal planes with parallel normals, and that normal is up. As a check that does not use
+    them, the vertical walls are fitted afterwards and should stand upright; their median tilt is
+    reported, and flagged when it is large.
+    """
+    up = np.array([0.0, 1.0, 0.0])
+    flags: list[str] = []
+    planes = fit_planes(
+        points, max_planes=2, thresh=thresh, min_inlier_frac=MIN_HORIZONTAL_FRAC,
+        normal_hint=up, max_angle_deg=PLANE_SEARCH_DEG, seed=seed,
+    )
+    planes = [p for p in planes if _is_area(points[p.inlier_mask])]
+    if not planes:
+        return GravityRefinement(np.eye(3), 0.0, 0, None, ["gravity_no_horizontal_plane"])
+    if len(planes) == 2:
+        between = np.degrees(np.arccos(np.clip(planes[0].normal @ planes[1].normal, -1, 1)))
+        if between > PLANES_AGREE_DEG:
+            planes = planes[:1]
+            flags.append("gravity_horizontal_planes_disagree")
+    n = sum(p.normal * p.inlier_mask.sum() for p in planes)
+    n = n / np.linalg.norm(n)
+    correction = float(np.degrees(np.arccos(np.clip(n @ up, -1, 1))))
+    if correction > MAX_CORRECTION_DEG:
+        return GravityRefinement(np.eye(3), 0.0, 0, None, flags + ["gravity_correction_too_large"])
+    rot = rotation_between(n, up)
+
+    walls = fit_planes(
+        points @ rot.T, max_planes=4, thresh=thresh, min_inlier_frac=0.02, seed=seed,
+        normal_hint=up, max_angle_deg=15.0, hint_mode="perpendicular",
+    )
+    # reported, not flagged: depth models warp walls, so on real clips this reads 4-15 degrees whatever "up" is
+    wall_tilt = float(np.median([np.degrees(np.arcsin(min(1.0, abs(w.normal[1])))) for w in walls])) if walls else None
+    return GravityRefinement(rot, correction, len(planes), wall_tilt, flags)
 
 
 def estimate_gravity(sfm: SfmResult) -> Gravity:
