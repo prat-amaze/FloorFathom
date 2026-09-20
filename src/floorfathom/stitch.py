@@ -19,20 +19,11 @@ from dataclasses import dataclass
 import numpy as np
 from matplotlib.path import Path
 
-from .schema import RoomPlan
+from .schema import CapturePlan, Diagnostics, Link, Measurement, Overlap, Placement, RoomPlan, Stitching
 
 MAX_GAP = 1.5  # metres: a doorway further than this from every other room leads outside
 MUTUAL = 0.5  # metres: the other room has its own doorway this close to ours
 CELL = 0.02  # metres, raster cell for areas
-
-
-@dataclass
-class Link:
-    room: str
-    opening: str
-    other: str | None  # None: no other room within MAX_GAP (outside, or a room not captured)
-    gap: float | None  # metres from the opening's centre to the other room's outline
-    mutual: bool  # the other room has a doorway of its own next to this one
 
 
 def _dist_to_outline(p: np.ndarray, poly: np.ndarray) -> float:
@@ -51,12 +42,12 @@ def adjacency(rooms: list[RoomPlan], max_gap: float = MAX_GAP) -> list[Link]:
             c = np.asarray(op.centre, float)
             near = sorted((_dist_to_outline(c, p), rid) for rid, p in polys.items() if rid != room.id)
             if not near or near[0][0] > max_gap:
-                links.append(Link(room.id, op.id, None, None, False))
+                links.append(Link(room=room.id, opening=op.id, other=None, gap=None, mutual=False))
                 continue
             gap, other = near[0]
             theirs = next(r for r in rooms if r.id == other)
             mutual = any(np.linalg.norm(np.asarray(o.centre, float) - c) <= MUTUAL for o in theirs.openings)
-            links.append(Link(room.id, op.id, other, gap, mutual))
+            links.append(Link(room=room.id, opening=op.id, other=other, gap=gap, mutual=mutual))
     return links
 
 
@@ -109,19 +100,6 @@ MAX_OVERLAP = 0.25  # m2 a placed room may share with the rooms already down bef
 MAX_WIDTH_DIFF = 0.3  # metres: the two sides of one doorway differ by more than this
 AMBIGUOUS = 0.1  # cost margin below which the runner-up placement is about as good
 SEARCH_CELL = 0.05  # metres, raster cell while searching (coarser than CELL, much faster)
-
-
-@dataclass
-class Placement:
-    room: str
-    angle: float  # radians counter-clockwise, applied about the room's own origin, then shifted
-    shift: tuple[float, float]
-    host: str | None  # the placed room whose doorway this room hangs off; None for the root
-    host_opening: str | None
-    opening: str | None  # this room's doorway that meets the host's
-    overlap: float  # m2 shared with the rooms already placed
-    width_diff: float | None  # metres between the two sides of the doorway
-    margin: float | None  # runner-up cost minus this cost: small means the placement is ambiguous
 
 
 @dataclass
@@ -198,7 +176,8 @@ def _candidates(new: RoomPlan, placed: dict[str, RoomPlan], used: set[tuple[str,
                     continue
                 cost = overlap + (wd or 0.0)
                 yield cost, Placement(
-                    new.id, float(angle), (float(shift[0]), float(shift[1])), host.id, ho.id, own.id, overlap, wd, None
+                    room=new.id, angle=float(angle), shift=(float(shift[0]), float(shift[1])), host=host.id,
+                    host_opening=ho.id, opening=own.id, overlap=overlap, width_diff=wd, margin=None,
                 ), moved
 
 
@@ -219,7 +198,10 @@ def stitch(rooms: list[RoomPlan], wall: float = WALL) -> Stitched:
         root = max(todo, key=lambda r: (len(r.openings), r.floor_area.value or 0.0))
         todo.remove(root)
         placed[root.id] = root.model_copy(update={"frame": "capture"})
-        placements.append(Placement(root.id, 0.0, (0.0, 0.0), None, None, None, 0.0, None, None))
+        placements.append(
+            Placement(room=root.id, angle=0.0, shift=(0.0, 0.0), host=None, host_opening=None, opening=None,
+                      overlap=0.0, width_diff=None, margin=None)
+        )
     used: set[tuple[str, str]] = set()
     unplaced: list[str] = []
     while todo:
@@ -245,3 +227,59 @@ def stitch(rooms: list[RoomPlan], wall: float = WALL) -> Stitched:
         todo.remove(room)
     order = {r.id: i for i, r in enumerate(rooms)}
     return Stitched(sorted(placed.values(), key=lambda r: order[r.id]), placements, unplaced)
+
+
+DRIFT_PLACED = (
+    "No pose chain links the rooms: each room is reconstructed in its own frame and placed by its "
+    "doorways, so drift cannot accumulate from room to room; a placement error enters only through "
+    "the doorway position and the assumed wall thickness. Drift within one room's own walk is not corrected."
+)
+
+
+def describe(rooms: list[RoomPlan], placements: list[Placement], unplaced: list[str], drift: str) -> Stitching:
+    """Adjacency, overlaps and footprint of rooms that are already in one frame."""
+    area = footprint_area(rooms)
+    with_area = [r.floor_area for r in rooms if r.floor_area.value]
+    total = sum(m.value for m in with_area)
+    # room errors are taken as shared (one scale for all), the conservative choice, so the union scales together
+    lo = area * sum(m.lo for m in with_area) / total if with_area and all(m.lo is not None for m in with_area) else None
+    hi = area * sum(m.hi for m in with_area) / total if with_area and all(m.hi is not None for m in with_area) else None
+    footprint = Measurement(
+        value=area, lo=lo, hi=hi, unit="m2",
+        method="union of the room polygons, overlaps counted once; interval scales it by the rooms' summed area interval",
+        note="inner faces of the walls: wall thickness between rooms is not included",
+    )
+    return Stitching(
+        footprint=footprint,
+        links=adjacency(rooms),
+        placements=placements,
+        overlaps=[Overlap(a=a, b=b, area=v) for a, b, v in overlaps(rooms)],
+        unplaced=unplaced,
+        drift=drift,
+    )
+
+
+def stitch_plans(plans: list[CapturePlan], name: str) -> CapturePlan:
+    """One property plan from per-room plans (one capture of one room each), placed by their doorways."""
+    rooms: list[RoomPlan] = []
+    for plan in plans:
+        for r in plan.rooms:
+            rid = r.id if all(r.id != o.id for o in rooms) else f"{plan.capture}_{r.id}"
+            rooms.append(r.model_copy(update={"id": rid, "name": r.name or plan.capture}))
+    out = stitch(rooms)
+    diag = plans[0].diagnostics
+    notes = [n for p in plans for n in p.diagnostics.notes]
+    return CapturePlan(
+        capture=name,
+        tier=plans[0].tier,
+        rooms=out.rooms,
+        stitching=describe(out.rooms, out.placements, out.unplaced, DRIFT_PLACED),
+        diagnostics=Diagnostics(
+            bootstrap_replicates=diag.bootstrap_replicates,
+            seed=diag.seed,
+            seconds=sum(p.diagnostics.seconds for p in plans),
+            conventions=diag.conventions,
+            models=sorted({m for p in plans for m in p.diagnostics.models}),
+            notes=[*notes, *[f"room {u} could not be placed: no doorway fits" for u in out.unplaced]],
+        ),
+    )
