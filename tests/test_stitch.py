@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from floorfathom.schema import Measurement, Opening, RoomPlan
-from floorfathom.stitch import _dist_to_outline, adjacency, footprint_area, overlap_area, overlaps, stitch, transform_room
+from floorfathom.schema import CapturePlan, Diagnostics, Measurement, Opening, RoomPlan
+from floorfathom.stitch import _dist_to_outline, adjacency, describe, footprint_area, overlap_area, overlaps, stitch, stitch_plans, transform_room
 
 WALL = 0.15  # metres between the inner faces of two neighbouring rooms
 
@@ -170,3 +170,34 @@ def test_transform_keeps_doorways_on_the_walls_and_the_area():
     assert moved.frame == "capture"
     assert footprint_area([moved]) == pytest.approx(footprint_area([east]), rel=0.02)
     assert _dist_to_outline(np.asarray(moved.openings[0].centre), np.asarray(moved.polygon)) < 1e-9
+
+
+def _one_room_plan(room: RoomPlan, capture: str) -> CapturePlan:
+    """What a per-room video or photo run reports: a single room, always called room_0."""
+    diag = Diagnostics(bootstrap_replicates=20, seed=0, seconds=1.0, conventions="test", notes=[f"{capture} ok"])
+    return CapturePlan(capture=capture, tier="video", rooms=[room.model_copy(update={"id": "room_0"})], diagnostics=diag)
+
+
+def test_per_room_plans_become_one_stitched_property_plan():
+    truth = _flat()
+    moves = {"east": (1.0, (12.0, -3.0)), "north": (-2.2, (-7.0, 5.0)), "west": (0.4, (3.0, 9.0))}
+    rooms = [truth[0].model_copy(update={"frame": "room"})] + [_in_own_frame(r, *moves[r.id]) for r in truth[1:]]
+    plan = stitch_plans([_one_room_plan(r, r.id) for r in rooms], "flat")
+    assert len({r.id for r in plan.rooms}) == 4 and plan.capture == "flat"
+    st = plan.stitching
+    assert st is not None and st.unplaced == [] and st.overlaps == []
+    assert st.footprint.value == pytest.approx(sum(r.floor_area.value for r in truth), rel=0.02)
+    names = ["east_room_0", "north_room_0", "west_room_0"]
+    want = {("room_0", n) for n in names} | {(n, "room_0") for n in names}
+    assert {(ln.room, ln.other) for ln in st.links} == want
+    assert all(ln.mutual and ln.gap == pytest.approx(WALL, abs=0.01) for ln in st.links)
+    assert CapturePlan.model_validate_json(plan.model_dump_json()) == plan
+
+
+def test_footprint_interval_scales_with_the_rooms_area_interval():
+    a, b = _pair()
+    a = a.model_copy(update={"floor_area": Measurement(value=12.0, lo=11.0, hi=13.0, unit="m2", method="t")})
+    b = b.model_copy(update={"floor_area": Measurement(value=12.0, lo=11.0, hi=13.0, unit="m2", method="t")})
+    fp = describe([a, b], [], [], "d").footprint
+    assert fp.value == pytest.approx(24.0, rel=0.02)
+    assert fp.lo == pytest.approx(fp.value * 22 / 24) and fp.hi == pytest.approx(fp.value * 26 / 24)
