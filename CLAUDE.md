@@ -61,7 +61,28 @@ where the output lands, known limits. Outputs go to `out/` (git-ignored); clear 
 
 ### Video tier: floor plan and room plan commands
 
-(owner fills)
+- Room plan (one clip = one room, with the yellow ruler taped up at the start, see `capture_protocol.md`):
+  `uv run floorfathom plan Data/H1.MOV --out out/h1 --reference-length-cm 31.6`
+- Floor plan (a folder of one-room clips, stitched into one plan): `uv run floorfathom plan out/clips --out out/video --reference-length-cm 31.6`
+  after `mkdir out/clips && cp Data/B1.MOV Data/B2.MOV Data/H1.MOV out/clips` (`Data/` itself also holds `Full.MOV`, the whole
+  flat, and `H2.MOV`, a second Hall take; both would be treated as extra rooms).
+- Outputs, one command each: `plan.json` (rooms with walls, ceiling, area, openings, `damage`, `concealed_flags`, `scope`, all
+  with 95% intervals; the stitched plan adds `stitching`, and a room that could not be placed stays in its own frame), `plan.png`,
+  `debug/damage/<surface>.png`, `work/` (keyframes, `sfm.pkl`, `dense.pkl`, `depth924/`, `alignment.json`: a rerun into the same
+  `--out` reuses them). A folder run also writes each clip's own plan to `rooms/<clip>/`.
+- How: keyframes every 0.2 s, pycolmap SfM (CPU), monocular depth (Depth Anything V2 Metric-Indoor, `floorfathom fetch-models`)
+  densified onto the SfM cloud, metric scale from the ruler's yellow body (`--reference-length-cm`, default 31.6; a depth-model
+  scale with a 15% interval when it is not found), then the LiDAR tier's room estimator, bootstrap and stitching.
+- Code: `io_video`, `sfm`, `mono_depth`, `world`, `anchor` (ruler), `points_video`, `video_pipeline.run_video/run_clip`, `stitch`,
+  `damage_video` (damage on the keyframes).
+- Time (this 7 GB CPU-only laptop, per clip of 30-40 s): SfM is about 80% of it. Measured cold: 24-35 min at 0.15 s spacing and
+  11 min at 0.3 s spacing; 0.2 s (the default) has not been timed yet, expect 15-20 min. SfM cached: about 4 min. All cached: about 1.5 min.
+  Keyframe spacing is `KEYFRAME_STEP_S` / `run_clip(keyframe_step_s=...)`; 0.3 s lost the H1 ceiling and moved its scale by 21%.
+- Limits (Data/, tape in `ground_truth.json`): walls miss the +-3% gate on B1, B2 and H1 (0 of 4 each; the estimator breaks
+  walls into short pieces, H1 came out 4.6-15 m2 against about 23 m2), openings 0 of 6 scored, ceiling seen on H1 only (-2% to -5%),
+  H1 vs H2 repeatability and `Full.MOV` not run, only B2 was placed in a stitched plan. The result on H1 changes between runs
+  (depth maps and keyframe spacing move it), and the damage found changes with it. The known cause: free space in the room
+  estimator needs floor points, which video clouds lack on a glossy floor; carving it from camera rays gave the right area in a test but is not in the repo.
 
 ### Photo tier: floor plan and room plan commands
 
