@@ -109,3 +109,58 @@ def test_a_failed_step_is_never_cached(tmp_path):
     cache = tmp_path / "x.pkl"
     assert vp._load_or_run(cache, "a", lambda: None) is None
     assert not cache.exists()
+
+
+def _anchor(scale, flags=(), rel=0.02):
+    from floorfathom.anchor import Anchor
+
+    return Anchor(length_sfm=0.2 / scale, scale=scale, rel_sigma=rel, n_frames=30, max_ray_angle_deg=20.0, residual_px=1.0, flags=list(flags))
+
+
+def _use_strip(monkeypatch, anchor, n_obs=30):
+    monkeypatch.setattr(vp, "track_strip", lambda *a, **k: [object()] * n_obs)
+    monkeypatch.setattr(vp, "estimate_anchor", lambda *a, **k: anchor)
+
+
+def test_strip_scale_is_used_when_found_and_plausible(monkeypatch):
+    _use_strip(monkeypatch, _anchor(0.45))
+    scale, rel, method, flags = vp._choose_scale(None, None, depth_scale=0.5, depth_rel=0.15)  # strip 10% under the depth model
+    assert (scale, method, flags) == (0.45, "reference_object", [])
+    assert rel == pytest.approx(float(np.hypot(0.02, vp.STRIP_LENGTH_REL)))  # far tighter than the depth model's 0.15
+
+
+def test_without_a_strip_the_depth_model_is_used_and_says_why(monkeypatch):
+    _use_strip(monkeypatch, None, n_obs=0)
+    assert vp._choose_scale(None, None, 0.5, 0.15) == (0.5, 0.15, "monocular_depth", ["reference_strip_not_found"])
+
+
+def test_a_flagged_strip_is_not_trusted(monkeypatch):
+    _use_strip(monkeypatch, _anchor(0.45, flags=["anchor_weak_baseline"]))
+    scale, rel, method, flags = vp._choose_scale(None, None, 0.5, 0.15)
+    assert (scale, method) == (0.5, "monocular_depth") and flags == ["reference_strip_rejected", "anchor_weak_baseline"]
+
+
+def test_a_strip_far_from_the_depth_model_is_taken_for_another_object(monkeypatch):
+    _use_strip(monkeypatch, _anchor(0.1))  # 5x smaller than the depth model: a door frame, not the strip
+    scale, _, method, flags = vp._choose_scale(None, None, 0.5, 0.15)
+    assert method == "monocular_depth" and scale == 0.5 and "reference_strip_implausible" in flags
+
+
+def test_the_measured_length_of_the_ruler_is_passed_on(monkeypatch):
+    seen = []
+    monkeypatch.setattr(vp, "track_strip", lambda *a, **k: [object()] * 30)
+    monkeypatch.setattr(vp, "estimate_anchor", lambda sfm, obs, length, **k: seen.append(length) or _anchor(0.45))
+    vp._choose_scale(None, None, 0.5, 0.15)
+    vp._choose_scale(None, None, 0.5, 0.15, reference_length_m=0.5)
+    assert seen == [vp.REFERENCE_LENGTH_M, 0.5]
+
+
+def test_the_alignment_file_maps_sfm_points_into_the_plan_frame(tmp_path):
+    import json
+
+    rot = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+    vp.write_alignment(tmp_path / "work" / "alignment.json", rot, 0.5, -1.2, (720, 1280))
+    a = json.loads((tmp_path / "work" / "alignment.json").read_text())
+    p = np.array([2.0, 3.0, 4.0])
+    q = (p @ np.array(a["rotation"]).T) * a["scale"]
+    assert q.tolist() == pytest.approx(((p @ rot.T) * 0.5).tolist()) and a["floor_y"] == -1.2 and a["image_size"] == [720, 1280]
