@@ -1,6 +1,6 @@
 # Capture Protocol (Route 2: Stock Capture)
 
-**Tool:** iPhone native Camera app (no third-party capture app, no dev build required).
+**Tool:** iPhone native Camera app for the Photo and Video tiers (no third-party app, no dev build). The LiDAR tier needs a LiDAR logging app, see below.
 **Devices used so far:** iPhone 16 (non-Pro — no LiDAR scanner on this hardware).
 
 This page is followed literally at the defense. If a step below is ambiguous, that
@@ -52,9 +52,30 @@ scanning app for the Photo or Video tiers.
 
 ## LiDAR tier
 
-No LiDAR-capable device (iPhone Pro/Pro Max) was available for this capture round.
-This tier is exercised against **Cozmo-provided sample data** instead of a live
-capture. 
+Needs an iPhone Pro or Pro Max (LiDAR scanner).
+
+**Install:** Stray Scanner (free, App Store). Its output folder (`rgb.mp4`, `depth/`,
+`confidence/`, `odometry.csv`, `camera_matrix.csv`, `imu.csv`) is the layout the pipeline
+reads, as in the Cozmo sample scans. No Pro device was available to us, so this has
+been checked against the sample scans only, not recorded live.
+
+**How to walk** (one continuous recording for the whole property):
+
+1. Start in the largest room and press record. Hold the phone upright, steady, at chest height.
+2. Walk slowly (about one step per second) along the walls of each room, then pan the phone up
+   to the ceiling and down to the floor once per room. A ceiling that is never seen gives no
+   ceiling height.
+3. Stay 0.5 to 3.5 m from walls; the pipeline ignores depth closer than 0.3 m or beyond 4 m.
+4. Walk through every doorway slowly, in and out, with every door open. A doorway the
+   camera never passed through is not found, and a closed door hides it.
+5. End at the spot where you started, so the walk closes on itself.
+6. Keep each recording under about 4 minutes (the sample scans are 0.6 to 3.6 minutes).
+
+**Avoid:** mirrors, glass doors and large windows in view (depth is wrong on them), people or
+pets moving through the frame, shiny wet floors, and fast turns.
+
+**Hand-off:** copy the whole scan folder unchanged (AirDrop or a cable, not a messenger) and run
+`uv run floorfathom plan <scan_folder> --out out/<name>`. One folder is one property.
 
 ## Handoff to the pipeline
 
