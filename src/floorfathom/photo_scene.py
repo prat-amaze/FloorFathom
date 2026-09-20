@@ -5,8 +5,9 @@ marking space that is known to be free. Stills give none of that: depth is per i
 rotations only (every photo is taken from one spot), and gravity is unknown.
 
   1. each registered photo's depth is back-projected and rotated into the root photo's frame,
-  2. the floor is found by RANSAC among points well below the camera, steered by the mean
-     camera-up direction of the photos, and the cloud is rotated so the floor normal is +y,
+  2. gravity is the direction, within 35 degrees of the photos' mean camera-up, in which the walls
+     are thinnest (a tilted "up" smears every wall in the top-down view); the cloud is rotated so
+     it is +y, and the floor height is then read the way the estimator reads it,
   3. the "trajectory" is the station plus samples along every viewing direction up to just
      before the first wall points: a single station sees no floor at its own feet, so without
      the fan the free space would be a ring with a hole and the room would be dropped.
@@ -23,18 +24,26 @@ import numpy as np
 from .io_photos import PhotoSet
 from .layout import BAND_HI, BAND_LO, CELL
 from .photo_pose import Poses
+from .planes import find_floor
 from .points import Cloud, voxel_downsample
-from .ransac import fit_plane, level
+from .ransac import Plane, fit_plane, level
 
 MIN_DEPTH_M, MAX_DEPTH_M = 0.3, 8.0  # depths trusted; a metric model is unreliable outside this
 EDGE_JUMP = 0.05  # relative depth change per pixel above which a pixel counts as an object edge
 PIXEL_STRIDE = 2
 VOXEL = 0.02
 FLOOR_BELOW = 0.5  # floor candidates lie at least this far below the camera (m)
-MAX_TILT_DEG = 35.0  # the floor normal may differ this much from the photos' mean up
-FLOOR_THRESH, FLOOR_RANGE_SLOPE = 0.03, 0.02  # inlier distance (m) and its growth per metre of range
+GRAVITY_SEARCH_DEG = 35.0  # gravity is looked for this far from the photos' mean camera-up
+GRAVITY_STAGES = ((3.0, GRAVITY_SEARCH_DEG), (1.0, 3.0), (0.25, 1.0))  # (step, half-width) in degrees, coarse to fine
+GRAVITY_AT_LIMIT_DEG = 3.0  # a search result this close to the edge of the cone is not trusted
+EYE_SLAB = (-0.6, 0.4)  # heights relative to the camera (m) whose points are scored as walls
+WALL_CELL = 0.05  # top-down cell (m) in which wall thinness is measured
+GRAVITY_MAX_POINTS = 150_000
+FLOOR_TILT_DEG = 10.0  # the floor-evidence plane may differ this much from the searched gravity
+FLOOR_THRESH, FLOOR_RANGE_SLOPE = 0.05, 0.03  # inlier distance (m) and its growth per metre of range
 CAMERA_HEIGHT_RANGE = (0.8, 2.0)  # a hand-held phone is not outside this; else the "floor" is furniture
 MIN_FLOOR_FRAC = 0.15  # share of the below-camera points the floor plane must carry (provisional, check on real photos)
+MIN_AREA_SPREAD, MIN_AREA_ASPECT = 0.3, 0.12  # a floor spreads over an area: std (m) along its narrow axis, and narrow / wide
 PAIR_STRIDE = 4  # pixel step when comparing two photos' depth in their overlap
 MIN_OVERLAP_FRAC = 0.04  # share of an image a pair must overlap to say anything about relative scale
 PAIR_SD_FLOOR = 0.03  # log-ratio noise every pair is assumed to have, so a lucky-tight pair does not dominate
@@ -146,6 +155,59 @@ def harmonise_scales(depths, focals, rotations, names) -> tuple[np.ndarray, floa
     return np.exp(ln_s), float(np.std(ln_s[linked])) if linked.any() else 0.0, flags
 
 
+def _is_area(p: np.ndarray) -> bool:
+    """True when points spread over an area. A horizontal slab through a wall is a thin line of points and fails."""
+    if len(p) < 10:
+        return False
+    s = np.linalg.svd(p - p.mean(axis=0), compute_uv=False) / np.sqrt(len(p))
+    return bool(s[1] >= MIN_AREA_SPREAD and s[1] >= MIN_AREA_ASPECT * s[0])
+
+
+def _plane_basis(u: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    a = np.array([1.0, 0.0, 0.0]) if abs(u[0]) < 0.9 else np.array([0.0, 0.0, 1.0])
+    e1 = np.cross(u, a)
+    e1 /= np.linalg.norm(e1)
+    return e1, np.cross(u, e1)
+
+
+def _wall_concentration(points: np.ndarray, up: np.ndarray) -> float:
+    """How thin the walls are when ``up`` is taken as vertical: the average number of eye-level points sharing a point's
+    5 cm top-down cell. Per point, not per pair: a tilt that pushes points out of the slab would otherwise look better."""
+    s = points @ up
+    p = points[(s > EYE_SLAB[0]) & (s < EYE_SLAB[1])]
+    if len(p) == 0:
+        return 0.0
+    e1, e2 = _plane_basis(up)
+    ij = np.floor(np.column_stack([p @ e1, p @ e2]) / WALL_CELL).astype(np.int64)
+    ij -= ij.min(axis=0)
+    counts = np.bincount(ij[:, 0] * (ij[:, 1].max() + 1) + ij[:, 1]).astype(float)
+    return float((counts**2).sum() / counts.sum())
+
+
+def _directions_around(u0: np.ndarray, half_deg: float, step_deg: float) -> np.ndarray:
+    """Unit vectors on a grid of tilts (in two perpendicular directions) up to ``half_deg`` from ``u0``, including ``u0``."""
+    e1, e2 = _plane_basis(u0)
+    g = np.arange(-half_deg, half_deg + 1e-9, step_deg)
+    tilts = [(a, b) for a in g for b in g if np.hypot(a, b) <= half_deg + 1e-9]
+    d = np.array([u0 + np.tan(np.radians(a)) * e1 + np.tan(np.radians(b)) * e2 for a, b in tilts])
+    return d / np.linalg.norm(d, axis=1, keepdims=True)
+
+
+def gravity_from_walls(points: np.ndarray, prior_up: np.ndarray) -> tuple[np.ndarray, float]:
+    """(up, angle from ``prior_up`` in degrees): the direction near the prior in which walls are thinnest.
+
+    The photos are held upright, so their mean camera-up is a good first guess, but a phone pitched to
+    see the ceiling or floor puts it 20 degrees or more off; tilting "up" wrongly turns every wall into a
+    band as wide as the tilt times the wall height. Coarse-to-fine grid search, deterministic.
+    """
+    sub = points[:: max(1, len(points) // GRAVITY_MAX_POINTS)].astype(np.float64)
+    best = np.asarray(prior_up, float) / np.linalg.norm(prior_up)
+    for step, half in GRAVITY_STAGES:
+        cands = _directions_around(best, half, step)
+        best = cands[int(np.argmax([_wall_concentration(sub, u) for u in cands]))]
+    return best, float(np.degrees(np.arccos(np.clip(best @ np.asarray(prior_up, float) / np.linalg.norm(prior_up), -1, 1))))
+
+
 def _fan(points: np.ndarray, floor_y: float) -> np.ndarray:
     """The station and cells along each viewing direction up to just before the nearest wall points."""
     h = points[:, 1] - floor_y
@@ -195,20 +257,26 @@ def build_scene(
     if not parts or sum(len(p) for p in parts) < MIN_POINTS:
         return None
     pts, chunk = np.concatenate(parts), np.concatenate(chunk)
-    up = np.mean(ups, axis=0)
-    up /= np.linalg.norm(up)
+    prior = np.mean(ups, axis=0)
+    prior /= np.linalg.norm(prior)
+    up, tilt = gravity_from_walls(pts, prior)
+    if tilt > GRAVITY_SEARCH_DEG - GRAVITY_AT_LIMIT_DEG:
+        flags.append("gravity_at_search_limit")
+    leveled, rot = level(pts, Plane(up, 0.0, np.zeros(0, bool)), up)
 
-    below = pts @ up < -FLOOR_BELOW
+    # the floor height is read as the estimator will read it, so the fan and the estimator agree;
+    # RANSAC only provides evidence that a floor was seen at all (a view of bare walls has none)
+    floor = find_floor(leveled[:, 1])
+    below = leveled[leveled[:, 1] < -FLOOR_BELOW]
     plane = fit_plane(
-        pts[below].astype(np.float64), thresh=FLOOR_THRESH, range_slope=FLOOR_RANGE_SLOPE,
-        normal_hint=up, max_angle_deg=MAX_TILT_DEG, seed=seed,
-    ) if below.sum() >= 3 else None
+        below, thresh=FLOOR_THRESH, range_slope=FLOOR_RANGE_SLOPE, normal_hint=(0.0, 1.0, 0.0),
+        max_angle_deg=FLOOR_TILT_DEG, seed=seed,
+    ) if len(below) >= 3 else None
     support = 0.0 if plane is None else float(plane.inlier_mask.mean())
-    if plane is None or support < MIN_FLOOR_FRAC:  # RANSAC always returns its best guess; a floor must be a large plane
+    # RANSAC always returns its best guess; a floor must be a large plane that spreads over an area
+    if floor is None or plane is None or support < MIN_FLOOR_FRAC or not _is_area(below[plane.inlier_mask]):
         return None
-    leveled, rot = level(pts, plane, up)
-    floor_y = float(plane.offset)
-    tilt = float(np.degrees(np.arccos(np.clip(plane.normal @ up, -1.0, 1.0))))
+    floor_y = floor.y
     if not CAMERA_HEIGHT_RANGE[0] <= -floor_y <= CAMERA_HEIGHT_RANGE[1]:
         flags.append("floor_plane_uncertain")
     cloud = Cloud(leveled.astype(np.float32), chunk, len(used))
