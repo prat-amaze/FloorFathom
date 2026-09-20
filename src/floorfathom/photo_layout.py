@@ -16,9 +16,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 from scipy import ndimage
 
+from . import layout as L
 from .layout import fit_line
 from .photo_scene import EYE_SLAB
 from .ransac import fit_planes
@@ -33,6 +35,10 @@ RUN_MIN_LEN = 0.6
 RUN_MIN_DENSITY = 0.3  # a bin is occupied when it holds this fraction of the median occupied bin (and at least 3 points)
 MIN_SUPPORT = 150  # points in the runs of a wall
 MERGE_ANGLE_DEG, MERGE_OFFSET = 6.0, 0.12  # planes this parallel and this close (m) are one wall
+RAY_DEG = 1.0  # the outline is the visible boundary from the station, sampled at this angular step
+RAY_SLACK = 0.5  # a ray still hits a wall this far (m) beyond its observed ends: corners are seldom observed
+MIN_ARC_DEG = 4.0  # a wall owns at least this much of the view to become an edge
+CORNER_REACH = 1.0  # two walls meet at their line intersection if it is within this (m) of both observed ends
 
 
 @dataclass
@@ -125,3 +131,116 @@ def wall_segments(points: np.ndarray, seed: int = 0) -> list[WallSegment]:
         if not any(_same_wall(k, s) for k in kept):
             kept.append(s)
     return kept
+
+
+def _cast_rays(segs: list[WallSegment]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Unit directions (R, 2), distance to the nearest wall along each (inf if none) and its index (-1 if none).
+
+    Direction k is (sin a, cos a) with a the azimuth from +z towards +x, as in the free-space fan of photo_scene.
+    """
+    a = np.radians(np.arange(-180.0 + RAY_DEG / 2, 180.0, RAY_DEG))
+    r = np.column_stack([np.sin(a), np.cos(a)])
+    dist = np.full((len(segs), len(a)), np.inf)
+    for i, s in enumerate(segs):
+        den = r @ s.normal
+        with np.errstate(divide="ignore", invalid="ignore"):
+            d = s.offset / den
+        along = (d[:, None] * r) @ s.tangent
+        ok = (den > 1e-3) & (along >= s.t0 - RAY_SLACK) & (along <= s.t1 + RAY_SLACK)
+        dist[i, ok] = d[ok]
+    nearest = dist.min(axis=0)
+    return r, nearest, np.where(np.isfinite(nearest), dist.argmin(axis=0), -1)
+
+
+def _cyclic_runs(owner: np.ndarray) -> tuple[list[list[int]], int]:
+    """[[owner, first, last], ...] over the circle, indices relative to ``start`` (the first ray of the first run)."""
+    n = len(owner)
+    change = np.nonzero(owner != np.roll(owner, 1))[0]
+    if len(change) == 0:
+        return [[int(owner[0]), 0, n - 1]], 0
+    start = int(change[0])
+    rolled = np.roll(owner, -start)
+    runs, i = [], 0
+    while i < n:
+        j = i
+        while j + 1 < n and rolled[j + 1] == rolled[i]:
+            j += 1
+        runs.append([int(rolled[i]), i, j])
+        i = j + 1
+    return runs, start
+
+
+def _clean_runs(runs: list[list[int]], min_bins: int) -> list[list[int]]:
+    """A wall that owns less than ``min_bins`` rays is noise: absorbed if the same wall is on both sides, else a gap."""
+    while len(runs) > 1:
+        short = next((k for k, (o, a, b) in enumerate(runs) if o >= 0 and b - a + 1 < min_bins), None)
+        if short is None:
+            break
+        before, after = runs[short - 1][0], runs[(short + 1) % len(runs)][0]
+        runs[short][0] = before if before == after else -1
+        merged: list[list[int]] = []
+        for run in runs:
+            if merged and merged[-1][0] == run[0]:
+                merged[-1][2] = run[2]
+            else:
+                merged.append(list(run))
+        runs = merged
+    return runs
+
+
+def outline_from_segments(segs: list[WallSegment], grid: L.Grid) -> L.RoomOutline | None:
+    """The visible boundary of the room from the station (the origin), as edges the LiDAR tier's report can read.
+
+    Rays from the station hit the nearest wall; a wall's stretch of rays is one edge. Neighbouring walls meet
+    at their line intersection (corners are seldom observed) when it lies near where their rays end; otherwise
+    the boundary jumps, and an unsupported edge joins the two ends. None when fewer than two walls are visible.
+    """
+    if len(segs) < 2:
+        return None
+    r, dist, owner = _cast_rays(segs)
+    n_rays = len(owner)
+    runs, start = _cyclic_runs(owner)
+    runs = [x for x in _clean_runs(runs, int(round(MIN_ARC_DEG / RAY_DEG))) if x[0] >= 0]
+    while len(runs) > 1 and runs[0][0] == runs[-1][0]:  # one wall seen on both sides of the wrap
+        runs[0][1] = runs[-1][1] - n_rays
+        runs.pop()
+    merged: list[list[int]] = []
+    for run in runs:  # one wall on both sides of a gap (a doorway, or something unobserved) is one edge
+        if merged and merged[-1][0] == run[0]:
+            merged[-1][2] = run[2]
+        else:
+            merged.append(list(run))
+    if len({o for o, _, _ in merged}) < 2:
+        return None
+    m = len(merged)
+    first = [dist[(a + start) % n_rays] * r[(a + start) % n_rays] for _, a, _ in merged]
+    last = [dist[(b + start) % n_rays] * r[(b + start) % n_rays] for _, _, b in merged]
+    begin, end, jump = [None] * m, [None] * m, [False] * m
+    for i in range(m):
+        j = (i + 1) % m
+        a, b = segs[merged[i][0]], segs[merged[j][0]]
+        x = L.intersect((a.normal, a.offset), (b.normal, b.offset))
+        if x is not None and np.linalg.norm(x - last[i]) <= CORNER_REACH and np.linalg.norm(x - first[j]) <= CORNER_REACH:
+            end[i], begin[j] = x, x
+        else:
+            end[i], begin[j], jump[i] = last[i], first[j], True
+    edges: list[L.Edge] = []
+    for i in range(m):
+        s = segs[merged[i][0]]
+        lo, hi = sorted((float(begin[i] @ s.tangent), float(end[i] @ s.tangent)))
+        covered = sum(max(0.0, min(hi, r1) - max(lo, r0)) for r0, r1 in s.runs)
+        support = min(1.0, covered / (hi - lo)) if hi > lo else 0.0
+        edges.append(L.Edge(begin[i], end[i], True, support, (s.normal.copy(), s.offset)))
+        j = (i + 1) % m
+        if jump[i] and np.linalg.norm(begin[j] - end[i]) > 0.05:
+            edges.append(L.Edge(end[i], begin[j], False, 0.0, None))
+    polygon = np.array([e.p0 for e in edges])
+    if len(polygon) < 3:
+        return None
+    if L.signed_area(polygon) < 0:  # counter-clockwise, like the LiDAR outlines
+        edges = [L.Edge(e.p1, e.p0, e.supported, e.support, e.line) for e in reversed(edges)]
+        polygon = np.array([e.p0 for e in edges])
+    pix = np.floor((polygon - [grid.x0, grid.z0]) / grid.cell).astype(np.int32)
+    mask = np.zeros((grid.nz, grid.nx), np.uint8)
+    cv2.fillPoly(mask, [pix.reshape(-1, 1, 2)], 1)
+    return L.RoomOutline(mask.astype(bool), polygon, edges, 0)
