@@ -9,6 +9,7 @@ from pathlib import Path
 from .drift import correct_points, correct_trajectory, estimate_drift
 from .estimate import Params, estimate, make_grid
 from .io_lidar import load_scan
+from .planes import find_floor
 from .points import build_cloud
 from .render import render_plan
 from .report import capture_plan
@@ -29,26 +30,33 @@ def detect_tier(capture: Path) -> str:
     raise ValueError(f"cannot tell the input tier of {capture}")
 
 
-def _lidar_stitching(cloud, traj, ref, plan: CapturePlan, params: Params, ablate: bool) -> Stitching:
+def _lidar_stitching(raw, raw_traj, plan: CapturePlan, params: Params, drift, ablate: bool, why_not: str) -> Stitching:
     """Adjacency, overlaps and footprint of the rooms, and what was done about pose drift.
 
-    The plan uses the poses as they are. Drift is estimated anyway and the footprint is
-    recomputed with it corrected, so every plan carries its own on/off comparison.
+    The plan comes from the drift-corrected walk. The uncorrected walk is estimated too, so every
+    plan carries its own on/off footprint comparison.
     """
-    text = "Poses are used as recorded (ARKit visual-inertial odometry) and drift is not corrected. "
-    if not ablate or ref.floor is None:
-        return describe(plan.rooms, [], [], text + "The drift ablation was not run.")
-    drift = estimate_drift(cloud, ref.floor.y)
-    fixed = correct_points(cloud, drift)
-    on = estimate(fixed.points, correct_trajectory(traj, drift), params, grid=make_grid(fixed.points, traj))
-    off_area = describe(plan.rooms, [], [], "").footprint.value
-    on_area = union_area([r.outline.polygon for r in on.rooms])
+    if drift is None:
+        return describe(plan.rooms, [], [], f"Drift was not corrected: {why_not}.")
+    if drift.n_pairs == 0:
+        text = "Drift could not be corrected: no two chunks of the walk overlapped enough to register. "
+    else:
+        text = (
+            f"Drift is corrected by a pose graph (drift.py): walls of {drift.n_pairs} chunk pairs of the walk are "
+            f"registered against each other and one (x, z, yaw) correction per chunk is solved by weighted least "
+            f"squares; the largest is {drift.max_shift * 100:.0f} cm and {drift.max_yaw_deg:.1f} deg. "
+        )
+    if ablate:
+        off = estimate(raw.points, raw_traj, params, grid=make_grid(raw.points, raw_traj))
+        off_area = union_area([r.outline.polygon for r in off.rooms])
+        on_area = describe(plan.rooms, [], [], "").footprint.value
+        text += (
+            f"Ablation: footprint {on_area:.1f} m2 ({len(plan.rooms)} rooms) with the correction, {off_area:.1f} m2 "
+            f"({len(off.rooms)} rooms) without ({(on_area / max(off_area, 1e-9) - 1) * 100:+.1f}%). "
+        )
     text += (
-        f"Ablation: the drift estimate (walls of {drift.n_pairs} chunk pairs registered) puts chunks up to "
-        f"{drift.max_shift * 100:.0f} cm and {drift.max_yaw_deg:.1f} deg apart; applying it gives a footprint of "
-        f"{on_area:.1f} m2 ({len(on.rooms)} rooms) against {off_area:.1f} m2 ({len(plan.rooms)} rooms) without "
-        f"({(on_area / off_area - 1) * 100:+.1f}%). It is not applied: on two repeat walks of one flat it did not "
-        "make them agree better, and the tolerances of the estimate are assumptions, not calibrated."
+        "The tolerances of the estimate are assumptions, not calibrated, and on two repeat walks of one flat "
+        "the correction did not make them agree better (README)."
     )
     return describe(plan.rooms, [], [], text)
 
@@ -62,6 +70,7 @@ def run_lidar(
     n_chunks: int = 20,
     debug: bool = True,
     params: Params | None = None,
+    correct_drift: bool = True,
     drift_ablation: bool = True,
 ) -> CapturePlan:
     t0 = time.perf_counter()
@@ -69,6 +78,13 @@ def run_lidar(
     scan = load_scan(capture)
     cloud = build_cloud(scan, target_frames=target_frames, n_chunks=n_chunks)
     traj = scan.positions[:, [0, 2]]
+    raw, raw_traj, drift, why_not = cloud, traj, None, "switched off"
+    floor = find_floor(cloud.points[:, 1]) if correct_drift else None
+    if floor is not None:
+        drift = estimate_drift(cloud, floor.y)
+        cloud, traj = correct_points(cloud, drift), correct_trajectory(traj, drift)
+    elif correct_drift:
+        why_not = "no floor plane was found to anchor the drift estimate"
     grid = make_grid(cloud.points, traj)
     ref = estimate(cloud.points, traj, params, grid=grid)
     samples = bootstrap(cloud, traj, ref, params, replicates=replicates, seed=seed)
@@ -87,7 +103,7 @@ def run_lidar(
         sharp,
         jackknife_scale(n_chunks, 2),
     )
-    plan.stitching = _lidar_stitching(cloud, traj, ref, plan, params, drift_ablation)
+    plan.stitching = _lidar_stitching(raw, raw_traj, plan, params, drift, drift_ablation, why_not)
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.json").write_text(plan.model_dump_json(indent=2))
     render_plan(plan, out / "plan.png")
