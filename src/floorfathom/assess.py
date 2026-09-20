@@ -64,12 +64,14 @@ def assess_room(
     min_views: int = 2,
     use_relief: bool = True,
     scale_rel_sigma: float | None = None,
+    report_unclassified: bool = True,
 ) -> list[str]:
     """Fill ``room.damage``, ``room.concealed_flags`` and ``room.scope``; returns notes on what could not be judged.
 
     ``frames`` is either an iterable of frames (one pass feeds every surface) or a function from a surface's plane
     to the frames to use for it. ``kinds`` names the surface kinds to assess. ``scale_rel_sigma`` is the relative
-    error of the frames' metric scale (a LiDAR walk: the default of a few percent).
+    error of the frames' metric scale (a LiDAR walk: the default of a few percent). ``report_unclassified=False``
+    drops regions that fit no damage class, for tiers without depth to tell furniture from the wall.
     """
     notes: list[str] = []
     planes = [(ref, pl) for ref, pl in surface_planes(room, floor_y, ceiling_y, mpp) if ref.kind in kinds]
@@ -82,7 +84,7 @@ def assess_room(
         seen = float(patch.valid.sum() / max(1, plane.inside.sum() if plane.inside is not None else patch.valid.size))
         if seen < MIN_SEEN:
             notes.append(f"{ref.id}: only {seen * 100:.0f}% of the surface was seen face on and unoccluded, damage elsewhere on it is unknown")
-        for f in detect(patch, scale_rel_sigma):
+        for f in detect(patch, scale_rel_sigma, report_unclassified):
             damage.append(to_region(f, ref, plane, room.id, len(damage), mpp))
 
     if callable(frames):
