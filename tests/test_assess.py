@@ -56,3 +56,12 @@ def test_no_frames_means_no_damage_and_a_note_per_surface_and_none_when_no_ceili
     notes = assess_room(room, FLOOR_Y, None, [], mpp=0.05)
     assert room.damage == [] and room.concealed_flags == [] and room.scope == []
     assert sum("only 0%" in n for n in notes) == 5 and any("no ceiling" in n for n in notes)  # 4 walls and the floor
+
+
+def test_report_unclassified_reaches_detect(monkeypatch):
+    import floorfathom.assess as assess
+
+    seen = []
+    monkeypatch.setattr(assess, "detect", lambda patch, sigma=None, unclassified=True: seen.append(unclassified) or [])
+    assess_room(_plan(), FLOOR_Y, None, [], mpp=0.1, report_unclassified=False)
+    assert seen and set(seen) == {False}
