@@ -65,11 +65,13 @@ def _capture(tmp_path_factory, name: str, stain: bool) -> Path:
 @pytest.fixture(scope="module")
 def stained(tmp_path_factory):
     root = _capture(tmp_path_factory, "stained", True)
-    return run(root, tmp_path_factory.mktemp("out_stained"), tier="lidar", replicates=4, debug=False)
+    out = tmp_path_factory.mktemp("out_stained")
+    return run(root, out, tier="lidar", replicates=4, debug=True), out
 
 
 def test_the_stain_is_found_on_the_right_wall_at_the_right_place(stained):
-    room = stained.rooms[0]
+    plan, _out = stained
+    room = plan.rooms[0]
     stains = [d for d in room.damage if d.damage_class == "water_stain"]
     assert len(room.damage) == 1 and len(stains) == 1 and stains[0].surface.kind == "wall"  # nothing else on the room's six surfaces
     d = stains[0]
@@ -82,6 +84,14 @@ def test_the_stain_is_found_on_the_right_wall_at_the_right_place(stained):
     assert any(s.damage_ids == [d.id] for s in room.scope)
 
 
-def test_the_plan_with_damage_is_valid_and_states_its_assumptions(stained):
-    assert any("our own definitions" in n for n in stained.diagnostics.notes)
-    assert CapturePlan.model_validate(stained.model_dump()) == stained
+def test_the_plan_with_damage_is_valid_states_its_assumptions_and_writes_the_shared_files(stained):
+    plan, out = stained
+    assert any("our own definitions" in n for n in plan.diagnostics.notes)
+    assert any("Seconds per stage" in n for n in plan.diagnostics.notes)
+    assert CapturePlan.model_validate(plan.model_dump()) == plan
+    assert (out / "plan.png").stat().st_size > 0 and (out / "plan.json").is_file()
+    per_room = sorted((out / "rooms").glob("*.json"))
+    assert [p.stem for p in per_room] == [r.id for r in plan.rooms]
+    one = CapturePlan.model_validate_json(per_room[0].read_text())
+    assert one.rooms == [plan.rooms[0]] and one.stitching is None
+    assert any((out / "debug" / "damage").glob("*.png"))

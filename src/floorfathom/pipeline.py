@@ -147,6 +147,9 @@ def run_lidar(
     plan.diagnostics.notes.append("Seconds per stage: " + ", ".join(f"{k} {v:.0f}" for k, v in stages.items()) + " (no caches are used).")
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.json").write_text(plan.model_dump_json(indent=2))
+    (out / "rooms").mkdir(exist_ok=True)
+    for room in plan.rooms:  # one CapturePlan per room, as the other tiers write
+        (out / "rooms" / f"{room.id}.json").write_text(plan.model_copy(update={"rooms": [room], "stitching": None}).model_dump_json(indent=2))
     render_plan(plan, out / "plan.png")
     if debug:
         from .debug import write_debug
