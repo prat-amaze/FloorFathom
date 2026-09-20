@@ -205,3 +205,15 @@ def test_the_alignment_file_maps_sfm_points_into_the_plan_frame(tmp_path):
     p = np.array([2.0, 3.0, 4.0])
     q = (p @ np.array(a["rotation"]).T) * a["scale"]
     assert q.tolist() == pytest.approx(((p @ rot.T) * 0.5).tolist()) and a["floor_y"] == -1.2 and a["image_size"] == [720, 1280]
+
+
+def test_the_keyframe_spacing_is_passed_on_and_keeps_caches_of_different_spacings_apart(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(vp, "extract_keyframes", lambda clip, out, step_s=0.15, **k: seen.append(step_s) or _keyframes(tmp_path))
+    stamps = []
+    monkeypatch.setattr(vp, "run_sfm", lambda *a, **k: None)
+    monkeypatch.setattr(vp, "_load_or_run", lambda cache, stamp, compute: stamps.append(stamp))
+    vp.run_clip(_clip(tmp_path), tmp_path / "a")
+    vp.run_clip(_clip(tmp_path), tmp_path / "b", keyframe_step_s=0.3)
+    assert seen == [vp.KEYFRAME_STEP_S, 0.3]
+    assert not stamps[0].endswith(":step0.3") and stamps[1].endswith(":step0.3") and stamps[0] != stamps[1]
