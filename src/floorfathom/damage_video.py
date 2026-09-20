@@ -18,6 +18,7 @@ Unrolling surfaces, detection, classes, concealed-damage flags and scope items a
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Sequence
 
 import cv2
@@ -180,15 +181,38 @@ def assess_video(
     scale_rel_sigma: float,
     depth: Depth | None = None,
     others: Sequence[RoomPlan] = (),
+    debug_dir: Path | None = None,
 ) -> list[str]:
     """Fill ``room.damage``, ``room.concealed_flags`` and ``room.scope`` for one clip's room; returns notes.
 
     ``rotation`` and ``scale`` are the ones that took the SfM reconstruction into the plan's frame, ``floor_y`` is
     the floor height in that frame and ``scale_rel_sigma`` the scale's relative standard error. ``depth`` is the
     depth model (RGB in, z-depth out): with it, what stands in front of a surface is left out of its patch.
+    ``debug_dir`` gets one picture per surface with its regions outlined.
     """
     views = Views(kf, sfm, world_poses(sfm, rotation, scale), scale, depth)
     ceiling_y = None if room.ceiling_height.value is None else floor_y + room.ceiling_height.value
     return assess_room(
-        room, floor_y, ceiling_y, views.frames_for, others, KINDS, use_relief=False, scale_rel_sigma=scale_rel_sigma
+        room, floor_y, ceiling_y, views.frames_for, others, KINDS, use_relief=False, scale_rel_sigma=scale_rel_sigma,
+        debug_dir=debug_dir,
     )
+
+
+def renumber_damage(room: RoomPlan, k: int) -> None:
+    """Move the damage of a room that was judged as ``room_0`` with ``r0_`` walls to ``room_<k>`` and ``r<k>_``.
+
+    Every clip is judged on its own, so its ids start at zero; when clips become rooms of one property the ids of
+    the walls and of the room change (``video_pipeline._renumber``) and everything that names them must follow:
+    the surface of each region, flag and scope item, and the ids of the regions, flags and items themselves.
+    Call it after the room's own id and walls were renumbered, or before: it only looks at the old prefixes.
+    """
+    def fix(text: str) -> str:
+        if text.startswith("room_0"):
+            text = f"room_{k}" + text[len("room_0"):]
+        return text.replace("r0_", f"r{k}_", 1) if text.startswith("r0_") else text
+
+    for item in [*room.damage, *room.concealed_flags, *room.scope]:
+        item.id = fix(item.id)
+        item.surface.id = fix(item.surface.id)
+        if hasattr(item, "damage_ids"):
+            item.damage_ids = [fix(i) for i in item.damage_ids]
