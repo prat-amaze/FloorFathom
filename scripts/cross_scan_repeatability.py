@@ -1,6 +1,9 @@
 """Repeatability across two captures of the same property (real data, no ground truth).
 
-    uv run python scripts/cross_scan_repeatability.py CAPTURE_A CAPTURE_B
+    uv run python scripts/cross_scan_repeatability.py CAPTURE_A CAPTURE_B [--drift]
+
+``--drift`` corrects each walk for drift first (drift.py), which is the ablation: run it
+with and without and compare.
 
 Each capture has its own world frame, so the wall maps are first aligned rigidly
 (rotation by brute force, translation by FFT cross-correlation). Rooms are then matched
@@ -18,18 +21,23 @@ import cv2
 import numpy as np
 from scipy.signal import fftconvolve
 
+from floorfathom.drift import correct_points, correct_trajectory, estimate_drift
 from floorfathom.estimate import estimate, make_grid
 from floorfathom.io_lidar import load_scan
+from floorfathom.planes import find_floor
 from floorfathom.points import build_cloud
 
 CELL = 0.05
 SIZE = 700  # alignment canvas, 35 m
 
 
-def _run(path: Path):
+def _run(path: Path, correct_drift: bool):
     scan = load_scan(path)
     cloud = build_cloud(scan, target_frames=800, n_chunks=20)
     traj = scan.positions[:, [0, 2]]
+    if correct_drift:
+        drift = estimate_drift(cloud, find_floor(cloud.points[:, 1]).y)
+        cloud, traj = correct_points(cloud, drift), correct_trajectory(traj, drift)
     return estimate(cloud.points, traj, grid=make_grid(cloud.points, traj))
 
 
@@ -78,8 +86,8 @@ def _poly_mask(poly: np.ndarray, origin: np.ndarray) -> np.ndarray:
     return m.astype(bool)
 
 
-def main(a_path: Path, b_path: Path) -> None:
-    est_a, est_b = _run(a_path), _run(b_path)
+def main(a_path: Path, b_path: Path, correct_drift: bool) -> None:
+    est_a, est_b = _run(a_path, correct_drift), _run(b_path, correct_drift)
     tf, deg, frac, origin = align(_wall_points(est_a), _wall_points(est_b))
     print(f"aligned {b_path.name} onto {a_path.name}: rotation {deg:.0f} deg, {frac:.0%} of its wall cells overlap\n")
     print(f"| room in {b_path.name} | matched room in {a_path.name} | IoU | area B (m2) | area A (m2) | area diff |")
@@ -116,6 +124,7 @@ def main(a_path: Path, b_path: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
+    args = [a for a in sys.argv[1:] if a != "--drift"]
+    if len(args) != 2:
         raise SystemExit(__doc__)
-    main(Path(sys.argv[1]), Path(sys.argv[2]))
+    main(Path(args[0]), Path(args[1]), correct_drift="--drift" in sys.argv)
