@@ -126,6 +126,13 @@ def test_a_clean_room_has_no_damage_flags_or_scope():
     assert own.damage == [] and own.concealed_flags == [] and own.scope == []
 
 
+def test_a_debug_picture_is_written_for_every_judged_surface(tmp_path):
+    room = _photo_room(_quads())
+    assess(room, room.plan, mpp=MPP, debug_dir=tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "r0_w0.png", "r0_w1.png", "r0_w2.png", "r0_w3.png", "room_0_ceiling.png"]  # walls and ceiling, not the floor
+
+
 def test_a_room_with_no_frames_is_left_alone():
     room = _photo_room(_quads())
     room.frames = []
