@@ -21,7 +21,10 @@ import numpy as np
 from scipy import ndimage
 
 from . import layout as L
+from .estimate import OpeningEst
 from .layout import fit_line
+from .photo_scene import _is_area
+from .planes import HeightPlane
 from .ransac import fit_planes
 
 WALL_SLAB = (-0.2, 0.8)  # heights relative to the camera (m) whose points are fitted as walls: above most furniture,
@@ -41,6 +44,13 @@ RAY_SLACK = 0.5  # a ray still hits a wall this far (m) beyond its observed ends
 MIN_ARC_DEG = 4.0  # a wall owns at least this much of the view to become an edge
 MIN_EDGE, CORNER_CUT = 0.5, 0.9  # edges shorter than this go; up to CORNER_CUT when both neighbours meet nearby (layout.drop_short)
 CORNER_REACH = 1.0  # two walls meet at their line intersection if it is within this (m) of both observed ends
+HEIGHT_PLANES = 6
+HEIGHT_THRESH, HEIGHT_RANGE_SLOPE = 0.08, 0.03  # floors and ceilings from depth are bowed: a wide inlier band
+HEIGHT_TILT_DEG = 6.0
+MIN_HEIGHT_FRAC = 0.04  # share of all points a floor or ceiling plane must carry
+CEILING_RANGE = (2.0, 4.5)  # a floor-to-ceiling distance outside this is not reported
+OPENING_WIDTH = (0.55, 1.8)  # doorway widths (m) looked for, as in the LiDAR tier's Params
+SEEN_THROUGH_MIN, SEEN_THROUGH_BEHIND = 30, 0.4  # points at least this far (m) behind the wall inside the gap's view
 
 
 @dataclass
@@ -247,3 +257,54 @@ def outline_from_segments(segs: list[WallSegment], grid: L.Grid) -> L.RoomOutlin
     mask = np.zeros((grid.nz, grid.nx), np.uint8)
     cv2.fillPoly(mask, [pix.reshape(-1, 1, 2)], 1)
     return L.RoomOutline(mask.astype(bool), polygon, edges, 0)
+
+
+def floor_and_ceiling(points: np.ndarray, seed: int = 0) -> tuple[HeightPlane | None, HeightPlane | None]:
+    """Floor and ceiling heights (cloud frame, camera at y = 0) as the lowest area-like horizontal plane below the
+    camera and the highest above it, found by RANSAC. Depth-model floors are bowed and furniture tops are horizontal
+    too, so each plane must carry ``MIN_HEIGHT_FRAC`` of all points and spread over an area. Either may be None."""
+    p = np.asarray(points, float)
+    planes = fit_planes(
+        p, max_planes=HEIGHT_PLANES, thresh=HEIGHT_THRESH, range_slope=HEIGHT_RANGE_SLOPE, min_inlier_frac=MIN_HEIGHT_FRAC,
+        normal_hint=(0.0, 1.0, 0.0), max_angle_deg=HEIGHT_TILT_DEG, seed=seed,
+    )
+    found = []
+    for pl in planes:
+        inl = p[pl.inlier_mask]
+        if not _is_area(inl):
+            continue
+        y = float(np.median(inl[:, 1]))
+        spread = 1.4826 * float(np.median(np.abs(inl[:, 1] - y)))
+        found.append(HeightPlane(y, spread, int(pl.inlier_mask.sum()), float(pl.inlier_mask.mean())))
+    below = [h for h in found if h.y < -0.5]
+    above = [h for h in found if h.y > 0.3]
+    return (min(below, key=lambda h: h.y) if below else None), (max(above, key=lambda h: h.y) if above else None)
+
+
+def _seen_through(slab_xz: np.ndarray, seg: WallSegment, a: float, b: float) -> bool:
+    """True when points lie well behind the wall line inside the wedge the gap [a, b] subtends at the station."""
+    pa = seg.offset * seg.normal + a * seg.tangent
+    pb = seg.offset * seg.normal + b * seg.tangent
+    side = np.sign(pa[0] * pb[1] - pa[1] * pb[0])
+    if side == 0:
+        return False
+    inside = ((pa[0] * slab_xz[:, 1] - pa[1] * slab_xz[:, 0]) * side >= 0) & ((slab_xz[:, 0] * pb[1] - slab_xz[:, 1] * pb[0]) * side >= 0)
+    behind = slab_xz @ seg.normal > seg.offset + SEEN_THROUGH_BEHIND
+    return int((inside & behind).sum()) >= SEEN_THROUGH_MIN
+
+
+def find_openings(segs: list[WallSegment], outline: L.RoomOutline, points: np.ndarray) -> list[OpeningEst]:
+    """Doorways: a gap between two dense runs of one wall, of doorway width, that something was seen through.
+    A gap nothing was seen through may be a door, a window or an unobserved patch, and is not reported."""
+    p = np.asarray(points, float)
+    slab = p[(p[:, 1] > WALL_SLAB[0]) & (p[:, 1] < WALL_SLAB[1])][:, [0, 2]]
+    out: list[OpeningEst] = []
+    for seg in segs:
+        edge = next((i for i, e in enumerate(outline.edges) if e.line is not None
+                     and np.allclose(e.line[0], seg.normal) and e.line[1] == seg.offset), None)
+        if edge is None:
+            continue
+        for (_, a), (b, _) in zip(seg.runs, seg.runs[1:]):
+            if OPENING_WIDTH[0] <= b - a <= OPENING_WIDTH[1] and _seen_through(slab, seg, a, b):
+                out.append(OpeningEst(seg.offset * seg.normal + a * seg.tangent, seg.offset * seg.normal + b * seg.tangent, edge))
+    return out
