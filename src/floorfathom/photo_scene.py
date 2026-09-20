@@ -48,6 +48,7 @@ PAIR_STRIDE = 4  # pixel step when comparing two photos' depth in their overlap
 MIN_OVERLAP_FRAC = 0.04  # share of an image a pair must overlap to say anything about relative scale
 PAIR_SD_FLOOR = 0.03  # log-ratio noise every pair is assumed to have, so a lucky-tight pair does not dominate
 MAX_SCALE_RESIDUAL = 0.12  # a pair disagreeing with the fitted scales by more than this (log units) is flagged
+MAX_PAIR_SPREAD = 0.15  # links between well-registered photos measured at most 0.11, a wrong one 0.19 and up
 MIN_POINTS = 2000
 FAN_BIN_DEG = 2.0
 FAN_PERCENTILE = 10  # nearest wall points per direction, robust to a few stray pixels
@@ -119,7 +120,46 @@ def _pair_log_ratio(zi, fi, zj, fj, rij) -> tuple[float, float] | None:
     return float(med), float((q3 - q1) / 1.349)
 
 
-def harmonise_scales(depths, focals, rotations, names) -> tuple[np.ndarray, float, list[str]]:
+def pair_log_ratios(depths, focals, rotations) -> dict[tuple[int, int], tuple[float, float]]:
+    """(median, spread) of the log depth ratio for every pair of images that overlap enough; ``rotations`` are camera -> root."""
+    out = {}
+    for i in range(len(depths)):
+        for j in range(i + 1, len(depths)):
+            got = _pair_log_ratio(depths[i], focals[i], depths[j], focals[j], rotations[j].T @ rotations[i])
+            if got is not None:
+                out[(i, j)] = got
+    return out
+
+
+def inconsistent_images(pairs: dict[tuple[int, int], tuple[float, float]], n: int) -> list[int]:
+    """Images, worst first, that a wrong rotation has probably put in the wrong place.
+
+    A photo turned wrongly sees different surfaces than its neighbours think it does, so its depth
+    disagrees with theirs wherever they overlap: the pair's spread is above ``MAX_PAIR_SPREAD``. A bad pair
+    says only that one of its two photos is wrong; the blame goes to the photo whose best *other* pair is
+    worse (a photo with no other pair has none). With a tie, as for a lone link, nothing is dropped.
+    Worst pair first, one photo at a time, since a bad photo also spoils the pairs of its good neighbours.
+    """
+    live, dropped = dict(pairs), []
+    while True:
+        bad = [(sd, k) for k, (_, sd) in live.items() if sd > MAX_PAIR_SPREAD]
+        if not bad:
+            return dropped
+        _, (i, j) = max(bad)
+
+        def best_other(x: int) -> float:
+            return min((sd for k, (_, sd) in live.items() if x in k and k != (i, j)), default=np.inf)
+
+        bi, bj = best_other(i), best_other(j)
+        if bi == bj:
+            live.pop((i, j))
+            continue
+        blame = i if bi > bj else j
+        dropped.append(blame)
+        live = {k: v for k, v in live.items() if blame not in k}
+
+
+def harmonise_scales(depths, focals, rotations, names, pairs=None) -> tuple[np.ndarray, float, list[str]]:
     """Per-image scale factors (median 1) that make overlapping depth maps agree, their log spread, and flags.
 
     One equation per overlapping pair, ln s_i - ln s_j = the pair's median log ratio, weighted by the
@@ -128,17 +168,14 @@ def harmonise_scales(depths, focals, rotations, names) -> tuple[np.ndarray, floa
     other image keep scale 1 and are flagged.
     """
     n = len(depths)
+    pairs = pair_log_ratios(depths, focals, rotations) if pairs is None else pairs
     rows, rhs, wts = [], [], []
-    for i in range(n):
-        for j in range(i + 1, n):
-            got = _pair_log_ratio(depths[i], focals[i], depths[j], focals[j], rotations[j].T @ rotations[i])
-            if got is None:
-                continue
-            row = np.zeros(n)
-            row[i], row[j] = 1.0, -1.0
-            rows.append(row)
-            rhs.append(got[0])
-            wts.append(1.0 / (got[1] ** 2 + PAIR_SD_FLOOR**2))
+    for (i, j), (med, sd) in pairs.items():
+        row = np.zeros(n)
+        row[i], row[j] = 1.0, -1.0
+        rows.append(row)
+        rhs.append(med)
+        wts.append(1.0 / (sd**2 + PAIR_SD_FLOOR**2))
     flags: list[str] = []
     ln_s = np.zeros(n)
     if rows:
@@ -242,8 +279,18 @@ def build_scene(
     used = [i for i, r in enumerate(poses.rotations) if r is not None]
     zs = [np.asarray(depth(photos.images[i].rgb), dtype=np.float32) for i in used]
     rots = [np.asarray(poses.rotations[i], float) for i in used]
-    scales, scale_spread, flags = harmonise_scales(
-        zs, [photos.images[i].f_px for i in used], rots, [photos.images[i].name for i in used])
+    focals = [photos.images[i].f_px for i in used]
+    pairs = pair_log_ratios(zs, focals, rots)
+    flags: list[str] = []
+    bad = inconsistent_images(pairs, len(used))
+    if bad:
+        flags += [f"image_inconsistent:{photos.images[used[k]].name}" for k in bad]
+        keep = [k for k in range(len(used)) if k not in bad]
+        used, zs, rots, focals = ([x[k] for k in keep] for x in (used, zs, rots, focals))
+        pairs = None  # indices changed
+    scales, scale_spread, scale_flags = harmonise_scales(
+        zs, focals, rots, [photos.images[i].name for i in used], pairs)
+    flags += scale_flags
     parts, chunk, ups = [], [], []
     for k, i in enumerate(used):
         im, z, r = photos.images[i], zs[k] / scales[k], rots[k]
