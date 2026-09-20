@@ -201,3 +201,10 @@ def test_footprint_interval_scales_with_the_rooms_area_interval():
     fp = describe([a, b], [], [], "d").footprint
     assert fp.value == pytest.approx(24.0, rel=0.02)
     assert fp.lo == pytest.approx(fp.value * 22 / 24) and fp.hi == pytest.approx(fp.value * 26 / 24)
+
+
+def test_plans_from_different_tiers_are_not_stitched_together():
+    a, b = _pair()
+    lidar = _one_room_plan(a, "a").model_copy(update={"tier": "lidar"})
+    with pytest.raises(ValueError, match="different tiers"):
+        stitch_plans([lidar, _one_room_plan(b, "b")], "mixed")
