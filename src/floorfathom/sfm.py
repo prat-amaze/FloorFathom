@@ -55,6 +55,9 @@ class SfmResult:
     flags: list[str] = field(default_factory=list)
     focal_prior_px: float = 0.0  # the starting focal length, keyframe pixels
     focal_source: str = "unknown"  # "metadata_35mm_equivalent" or "default"
+    # per registered keyframe: pixels (u, v) of its triangulated points and their depth along the
+    # camera z axis in SfM units, used to fit a depth model's output to the reconstruction
+    observations: dict[int, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
 
     @property
     def registered_fraction(self) -> float:
@@ -123,13 +126,24 @@ def run_sfm(kf: Keyframes, work: str | Path, seed: int = 0, window: int = 12) ->
     registered = np.zeros(n, dtype=bool)
     centers = np.full((n, 3), np.nan)
     rot = np.full((n, 3, 3), np.nan)
+    observations: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     for image_id in rec.reg_image_ids():
         img = rec.images[image_id]
         i = index[img.name]
-        world_from_cam = img.cam_from_world().inverse()
+        cam_from_world = img.cam_from_world()
+        world_from_cam = cam_from_world.inverse()
         registered[i] = True
         centers[i] = world_from_cam.translation
         rot[i] = world_from_cam.rotation.matrix()
+        r_cw, t_cw = cam_from_world.rotation.matrix(), np.asarray(cam_from_world.translation)
+        uv, z = [], []
+        for p in img.points2D:
+            if p.has_point3D():
+                depth = float((r_cw @ rec.points3D[p.point3D_id].xyz + t_cw)[2])
+                if depth > 0:
+                    uv.append(p.xy)
+                    z.append(depth)
+        observations[i] = (np.array(uv).reshape(-1, 2), np.array(z))
     cam = next(iter(rec.cameras.values()))
     params = cam.params  # SIMPLE_RADIAL: f, cx, cy, k
     pts = list(rec.points3D.values())
@@ -148,6 +162,7 @@ def run_sfm(kf: Keyframes, work: str | Path, seed: int = 0, window: int = 12) ->
         unposed_spans=_spans(~registered, kf.time_s),
         focal_prior_px=f,
         focal_source=focal_source,
+        observations=observations,
     )
     if focal_source == "default":
         result.flags.append("focal_prior_default")
