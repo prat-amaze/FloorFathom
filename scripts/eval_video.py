@@ -1,6 +1,6 @@
 """Score video plans against the tape measurements in ground_truth.json (the Data/ flat).
 
-    uv run python scripts/eval_video.py PLAN[:ROOM] [PLAN[:ROOM] ...] [--tol 0.03]
+    uv run python scripts/eval_video.py PLAN[:ROOM] [PLAN[:ROOM] ...] [--tol 0.03] [--skip DOOR_ID,...]
     uv run python scripts/eval_video.py --repeat PLAN_A PLAN_B
 
 PLAN is a plan.json. The truth room comes from the room's name (B1, B2, BR, H1, H2 and their
@@ -10,7 +10,8 @@ several rooms is scored on its largest. For each tape wall the nearest-length pl
 openings within 2 cm (a missed or a phantom opening is a miss); every row also says whether the
 tape value lies inside the plan's own [lo, hi]. ``--repeat`` compares the walls of two captures of
 one room: within 1 cm or 0.5% per wall, and the ceilings within 1 cm. Only doors are scored, not
-windows. Always exits 0: it reports, it does not gate.
+windows. ``--skip`` leaves the named tape doors out of the opening score (a door that no capture
+shows open, such as main_door, is otherwise counted as missed). Always exits 0: it reports, it does not gate.
 """
 
 from __future__ import annotations
@@ -77,10 +78,11 @@ def _resolve(spec: str) -> tuple[Path, str]:
     return Path(path), ALIASES.get(name, key)
 
 
-def score(spec: str, tol: float) -> None:
+def score(spec: str, tol: float, skip: frozenset[str] = frozenset()) -> None:
     path, key = _resolve(spec)
     plan = CapturePlan.model_validate_json(path.read_text())
     room, t = largest_room(plan), truth_room(key)
+    t["doors"] = [d for d in t["doors"] if d[0] not in skip]
     print(f"\n### {path} -> {key} (plan room {room.id}, {room.floor_area.value:.2f} m2 of {len(plan.rooms)} room(s); flags: {', '.join(room.flags) or 'none'})\n")
     print("| item | tape (cm) | plan (cm) | error | pass | tape inside [lo, hi] |")
     print("|---|---|---|---|---|---|")
@@ -146,16 +148,20 @@ def repeat(spec_a: str, spec_b: str) -> None:
 
 
 def main(argv: list[str]) -> None:
-    tol = 0.03
+    tol, skip = 0.03, frozenset()
     if "--tol" in argv:
         i = argv.index("--tol")
         tol = float(argv[i + 1])
+        argv = argv[:i] + argv[i + 2 :]
+    if "--skip" in argv:
+        i = argv.index("--skip")
+        skip = frozenset(argv[i + 1].split(","))
         argv = argv[:i] + argv[i + 2 :]
     if argv and argv[0] == "--repeat" and len(argv) == 3:
         repeat(argv[1], argv[2])
     elif argv and not argv[0].startswith("--"):
         for spec in argv:
-            score(spec, tol)
+            score(spec, tol, skip)
     else:
         raise SystemExit(__doc__)
 
