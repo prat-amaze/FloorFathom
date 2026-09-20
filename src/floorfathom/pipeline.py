@@ -96,9 +96,15 @@ def run_lidar(
     assess_damage: bool = True,
 ) -> CapturePlan:
     t0 = time.perf_counter()
+    stages: dict[str, float] = {}
+
+    def lap(name: str) -> None:
+        stages[name] = time.perf_counter() - t0 - sum(stages.values())
+
     params = params or Params()
     scan = load_scan(capture)
     cloud = build_cloud(scan, target_frames=target_frames, n_chunks=n_chunks)
+    lap("cloud")
     traj = scan.positions[:, [0, 2]]
     raw, raw_traj, drift, why_not = cloud, traj, None, "switched off"
     floor = find_floor(cloud.points[:, 1]) if correct_drift else None
@@ -107,9 +113,12 @@ def run_lidar(
         cloud, traj = correct_points(cloud, drift), correct_trajectory(traj, drift)
     elif correct_drift:
         why_not = "no floor plane was found to anchor the drift estimate"
+    lap("drift")
     grid = make_grid(cloud.points, traj)
     ref = estimate(cloud.points, traj, params, grid=grid)
+    lap("estimate")
     samples = bootstrap(cloud, traj, ref, params, replicates=replicates, seed=seed)
+    lap("bootstrap")
     frames_used = min(len(scan), target_frames)
     sharp = None if ref.floor is None else ref.floor.sharpness
     plan = capture_plan(
@@ -126,13 +135,16 @@ def run_lidar(
         jackknife_scale(n_chunks, 2),
     )
     plan.stitching = _lidar_stitching(raw, raw_traj, plan, params, drift, drift_ablation, why_not)
+    lap("stitching")
     if assess_damage:
         plan.diagnostics.notes += _lidar_damage(scan, traj, drift, plan, out / "debug" / "damage" if debug else None)
         plan.diagnostics.notes.append(
             "Damage classes, concealed-damage rules and scope actions are our own definitions, tuned on synthetic surfaces; "
             "no real damage was available to check them (README)."
         )
-        plan.diagnostics.seconds = time.perf_counter() - t0
+        lap("damage")
+    plan.diagnostics.seconds = time.perf_counter() - t0
+    plan.diagnostics.notes.append("Seconds per stage: " + ", ".join(f"{k} {v:.0f}" for k, v in stages.items()) + " (no caches are used).")
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.json").write_text(plan.model_dump_json(indent=2))
     render_plan(plan, out / "plan.png")
