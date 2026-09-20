@@ -39,15 +39,27 @@ def load(out: Path):
     return plan, align, sfm, kf
 
 
-def debug_images(room, views: D.Views, floor_y: float, ceiling_y, dest: Path) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
+def surface_patches(room, views: D.Views, floor_y: float, ceiling_y):
+    """(surface, plane, patch) of every surface the video tier judges, unrolled from the frames the adapter picks."""
     for ref, plane in S.surface_planes(room, floor_y, ceiling_y):
         if ref.kind not in D.KINDS:
             continue
         acc = S.Accumulator(plane, 2, False)
         for fr in views.frames_for(plane):
             acc.add(fr)
-        patch = acc.patch()
+        yield ref, plane, acc.patch()
+
+
+def save_patches(room, views: D.Views, floor_y: float, ceiling_y, dest: Path, prefix: str) -> None:
+    """One small .npz per surface (rgb as float16, valid, m_per_px): a test set for the detector."""
+    dest.mkdir(parents=True, exist_ok=True)
+    for ref, _plane, patch in surface_patches(room, views, floor_y, ceiling_y):
+        np.savez_compressed(dest / f"{prefix}_{ref.id}.npz", rgb=patch.rgb.astype(np.float16), valid=patch.valid, m_per_px=patch.m_per_px)
+
+
+def debug_images(room, views: D.Views, floor_y: float, ceiling_y, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    for ref, plane, patch in surface_patches(room, views, floor_y, ceiling_y):
         img = (np.clip(patch.rgb, 0, 1) * 255).astype(np.uint8)
         img[~patch.valid] = (img[~patch.valid] * 0.25 + np.array([60, 0, 60]) * 0.75).astype(np.uint8)
         ox, oy = (0.0, 0.0) if ref.kind == "wall" else (plane.origin[0], -plane.origin[2])
@@ -92,6 +104,7 @@ def main() -> None:
     ap.add_argument("--depth", action="store_true")
     ap.add_argument("--room")
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--save-patches", type=Path, help="also save every judged surface as <dir>/<run name>_<surface>.npz")
     ap.add_argument("--closure-walls", action="store_true", help="diagnostic: judge walls that are only chords across gaps too")
     args = ap.parse_args()
     plan, align, sfm, kf = load(args.out)
@@ -110,8 +123,10 @@ def main() -> None:
             print(f"  {d.id} {d.surface.id} {d.damage_class} conf {d.class_confidence:.2f} {d.width.value * 100:.0f} x {d.height.value * 100:.0f} cm at {d.centre}")
         for n in notes:
             print("  note:", n)
+        ceiling = None if room.ceiling_height.value is None else floor_y + room.ceiling_height.value
+        if args.save_patches:
+            save_patches(room, D.Views(kf, sfm, D.world_poses(sfm, rotation, scale), scale, depth), floor_y, ceiling, args.save_patches, args.out.name)
         if args.debug:
-            ceiling = None if room.ceiling_height.value is None else floor_y + room.ceiling_height.value
             debug_images(room, D.Views(kf, sfm, D.world_poses(sfm, rotation, scale), scale, depth), floor_y, ceiling, args.out / "damage_debug")
     (args.out / "damage.json").write_text(plan.model_dump_json(indent=2))
 
