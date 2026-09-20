@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.2.0"
+SCHEMA_VERSION = "0.3.0"
 
 Point = tuple[float, float]
 
@@ -92,12 +92,54 @@ class Diagnostics(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class Link(BaseModel):
+    """Which room a doorway opens onto."""
+
+    room: str
+    opening: str
+    other: str | None = Field(description="the room behind the doorway; null if none is within 1.5 m (outside, or not captured)")
+    gap: float | None = Field(description="metres from the doorway to the other room's outline; a wall thickness is a real link")
+    mutual: bool = Field(description="the other room has a doorway of its own next to this one")
+
+
+class Placement(BaseModel):
+    """How a room in its own frame was moved into the shared frame, by gluing doorways."""
+
+    room: str
+    angle: float = Field(description="radians counter-clockwise, about the room's own origin, applied before the shift")
+    shift: Point
+    host: str | None = Field(description="the placed room this one hangs off; null for the root")
+    host_opening: str | None
+    opening: str | None = Field(description="this room's doorway that meets the host's")
+    overlap: float = Field(description="m2 shared with the rooms already placed")
+    width_diff: float | None = Field(description="metres between the two sides of the doorway")
+    margin: float | None = Field(description="runner-up cost minus this cost; small means the placement is ambiguous")
+
+
+class Overlap(BaseModel):
+    a: str
+    b: str
+    area: float = Field(description="m2 of floor both rooms claim")
+
+
+class Stitching(BaseModel):
+    """The rooms as one property: adjacency, placement, overlaps and footprint."""
+
+    footprint: Measurement = Field(description="m2 of floor covered by all placed rooms, overlaps counted once")
+    links: list[Link]
+    placements: list[Placement] = Field(default_factory=list, description="empty when the rooms were already in one frame")
+    overlaps: list[Overlap] = Field(default_factory=list)
+    unplaced: list[str] = Field(default_factory=list, description="rooms with no doorway that fits anywhere")
+    drift: str = Field(description="what was done about pose drift, and what it was not")
+
+
 class CapturePlan(BaseModel):
     schema_version: str = SCHEMA_VERSION
     capture: str
     tier: Literal["lidar", "video", "photo"]
     units: Literal["m"] = "m"
     rooms: list[RoomPlan]
+    stitching: Stitching | None = None
     diagnostics: Diagnostics
 
 
