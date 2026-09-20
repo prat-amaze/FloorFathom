@@ -116,10 +116,11 @@ pets moving through the frame, shiny wet floors, and fast turns.
    download (I used Google Drive). Never send it through WhatsApp or another messenger:
    they shrink the video and strip the lens information the pipeline reads.
 4. Do not re-encode, crop or trim the video.
-5. Hand the pipeline the photo folder that holds all the room folders, or one video clip, per
-   run. Give the yellow length you measured. Photos: `uv run floorfathom plan <capture> --tier photo
-   --out out/<name> --reference-length-cm <length in cm>` (the rooms are stitched into one plan).
-   Video: `uv run floorfathom plan <clip> --out out/<name> --reference-length-cm <length in cm>`.
+5. Hand the pipeline the photo folder that holds all the room folders, or the folder that holds all
+   the room clips (or one video clip), per run. Give the yellow length you measured. Photos: `uv run
+   floorfathom plan <capture> --tier photo --out out/<name> --reference-length-cm <length in cm>` (the
+   rooms are stitched into one plan). Video: `uv run floorfathom plan <clip or clip folder> --out
+   out/<name> --reference-length-cm <length in cm>` (several clips are stitched into one plan).
 
 ## Device matrix
 
