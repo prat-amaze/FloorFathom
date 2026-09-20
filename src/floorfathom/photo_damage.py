@@ -10,6 +10,7 @@ recomputed with the neighbouring rooms in view.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -30,15 +31,18 @@ POSE_REL = 0.03  # assumed relative error of the wall plane's distance from arm 
 NO_SCALE_REL = 0.30  # used when the room carries no scale uncertainty (as for a depth-model-only scale)
 
 
-def assess(room: PhotoRoom, stitched: CapturePlan, mpp: float = MPP) -> None:
-    """Fill damage, concealed flags and scope on the room's own plan and on its copy in ``stitched``."""
+def assess(room: PhotoRoom, stitched: CapturePlan, mpp: float = MPP, debug_dir: Path | None = None) -> None:
+    """Fill damage, concealed flags and scope on the room's own plan and on its copy in ``stitched``.
+
+    ``debug_dir`` gets one picture per judged surface (the unrolled patch, purple where not judged, regions outlined).
+    """
     own = room.plan.rooms[0]
     if room.floor_y is None or not room.frames or not own.polygon:
         return
     rel = float(np.hypot(room.scale_rel_sigma if room.scale_rel_sigma is not None else NO_SCALE_REL, POSE_REL))
     notes = assess_room(
         own, room.floor_y, room.ceiling_y, lambda _plane: room.frames, kinds=KINDS, mpp=mpp,
-        min_views=MIN_VIEWS, use_relief=False, scale_rel_sigma=rel,
+        min_views=MIN_VIEWS, use_relief=False, scale_rel_sigma=rel, debug_dir=debug_dir,
     )
     if notes:
         own.flags = list(dict.fromkeys([*own.flags, "damage_coverage_partial"]))
