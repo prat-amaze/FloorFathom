@@ -317,9 +317,11 @@ def run_photo(
     scale_rel_sigma: float | None = None,
     depth: Depth | None = None,
     reference_length_m: float | None = None,
+    debug: bool = True,
     **_ignored,
 ) -> CapturePlan:
-    """One plan per room folder of ``capture`` (written to ``out/rooms/<room>.json``) and the stitched property plan."""
+    """One plan per room folder of ``capture`` (written to ``out/rooms/<room>.json``) and the stitched property plan.
+    ``debug`` also writes one damage picture per judged surface to ``out/debug/damage``."""
     capture, out = Path(capture), Path(out)
     built = photo_rooms(capture, out, seed, scale, scale_rel_sigma, depth, reference_length_m)
     plans = [r.plan for r in built]
@@ -337,7 +339,7 @@ def run_photo(
         for room in built:
             if room.frames:
                 try:
-                    photo_damage.assess(room, result)
+                    photo_damage.assess(room, result, debug_dir=out / "debug" / "damage" if debug else None)
                 except Exception as e:  # damage is an add-on: a failure there must not cost the room plan
                     for r in (room.plan.rooms[0], *[x for x in result.rooms if x.id == room.plan.rooms[0].id]):
                         r.flags.append(f"damage_assessment_failed:{type(e).__name__}")
