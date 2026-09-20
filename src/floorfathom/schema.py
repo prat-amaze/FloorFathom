@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = "0.2.0"
 
 Point = tuple[float, float]
 
@@ -50,25 +50,46 @@ class Opening(BaseModel):
     note: str | None = None
 
 
+class Station(BaseModel):
+    """Where the camera stood in the room's frame (a photo, or a place along a video walk)."""
+
+    position: Point
+    height_above_floor: float | None = Field(default=None, description="metres")
+
+
 class RoomPlan(BaseModel):
     id: str
+    name: str | None = Field(default=None, description="the room's name in the capture (folder or clip name), if known")
+    frame: Literal["capture", "room"] = Field(
+        default="capture",
+        description="capture: coordinates are in the frame shared by the whole capture; "
+        "room: the room's own local frame, not yet placed relative to the other rooms",
+    )
     polygon: list[Point] = Field(description="counter-clockwise corner points, plan coordinates")
     walls: list[Wall]
     ceiling_height: Measurement
     floor_area: Measurement
     openings: list[Opening]
+    stations: list[Station] = Field(default_factory=list)
     flags: list[str] = Field(default_factory=list)
 
 
 class Diagnostics(BaseModel):
-    frames_used: int
-    points: int
-    floor_height_world: float | None
-    floor_sharpness: float | None = Field(description="fraction of all points inside the floor spike")
+    frames_used: int | None = Field(default=None, description="depth frames (lidar) or keyframes (video); not used for photos")
+    points: int | None = None
+    floor_height_world: float | None = None
+    floor_sharpness: float | None = Field(default=None, description="fraction of all points inside the floor spike")
     bootstrap_replicates: int
     seed: int
     seconds: float
     conventions: str
+    models: list[str] = Field(default_factory=list, description="pretrained models used, as id@revision")
+    scale_method: str | None = Field(
+        default=None, description="how metric scale was obtained, e.g. lidar_metric, reference_object, monocular_depth"
+    )
+    scale_factor: float | None = Field(default=None, description="metres per unit of the reconstruction, when there is one")
+    scale_rel_sigma: float | None = Field(default=None, description="standard error of the scale as a fraction of it")
+    notes: list[str] = Field(default_factory=list)
 
 
 class CapturePlan(BaseModel):
