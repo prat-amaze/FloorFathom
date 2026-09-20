@@ -123,6 +123,10 @@ def run(capture: str | Path, out: str | Path, tier: str | None = None, **kw) -> 
         from .video_pipeline import run_video
 
         return run_video(capture, out, **kw)
+    if tier == "photo":
+        from .photo_pipeline import run_photo
+
+        return run_photo(capture, out, **kw)
     raise NotImplementedError(f"the {tier} tier is not implemented yet; only lidar is")
 
 
