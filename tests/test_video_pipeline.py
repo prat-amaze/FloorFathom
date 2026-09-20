@@ -69,6 +69,7 @@ def test_failed_reconstruction_gives_an_empty_plan_with_the_reason(tmp_path, mon
     assert plan.rooms == [] and plan.tier == "video" and "sfm_failed" in plan.diagnostics.notes
     again = CapturePlan.model_validate_json((tmp_path / "out" / "plan.json").read_text())  # valid to the schema
     assert again.capture == "room"
+    assert again.stitching is not None and again.stitching.footprint.value is None and again.stitching.links == []
 
 
 def test_too_few_registered_frames_gives_no_numbers(tmp_path, monkeypatch):
@@ -104,6 +105,44 @@ def test_a_folder_of_clips_gives_one_stitched_plan_with_unique_ids(tmp_path, mon
     assert st is not None and st.unplaced == [] and st.overlaps == []
     assert {(ln.room, ln.other) for ln in st.links} == {("room_0", "room_1"), ("room_1", "room_0")}
     assert CapturePlan.model_validate_json((tmp_path / "out" / "plan.json").read_text()) == plan
+    assert sorted(f.name for f in (tmp_path / "out" / "rooms").iterdir()) == ["B1.json", "Hall.json"]  # one file per clip, no folders
+
+
+def test_one_clip_gives_the_same_layout_with_a_stitching_of_its_one_room(tmp_path, monkeypatch):
+    from test_stitch import _box, _one_room_plan
+
+    seen = []
+
+    def fake(clip, out, work=None, debug_dir=None, **k):
+        seen.append((work, debug_dir))
+        debug_dir.mkdir(parents=True)
+        (debug_dir / "r0_w1.png").write_bytes(b"png")  # the clip's own picture of its wall
+        return _one_room_plan(_box("hub", 0, 0, 6, 4, []).model_copy(update={"frame": "room"}), "room")
+
+    monkeypatch.setattr(vp, "run_clip", fake)
+    out = tmp_path / "out"
+    plan = vp.run_video(_clip(tmp_path), out)
+    st = plan.stitching
+    assert st is not None and st.links == [] and st.footprint.value == pytest.approx(24.0, rel=0.05)
+    assert seen[0][0] == out / "work"  # caches stay where a rerun and the dev scripts look for them
+    assert (out / "plan.json").exists() and (out / "plan.png").exists() and (out / "rooms" / "room.json").exists()
+    assert (out / "debug" / "damage" / "r0_w1.png").exists() and not (out / "work" / "debug").exists()
+    assert CapturePlan.model_validate_json((out / "plan.json").read_text()) == plan
+
+
+def test_the_damage_pictures_of_a_folder_follow_the_renumbered_surfaces(tmp_path, monkeypatch):
+    from test_stitch import _box, _one_room_plan
+
+    def fake(clip, out, work=None, debug_dir=None, **k):
+        debug_dir.mkdir(parents=True)
+        (debug_dir / "r0_w1.png").write_bytes(b"png")
+        return _one_room_plan(_box(clip.stem, 0, 0, 6, 4, []).model_copy(update={"frame": "room"}), clip.stem)
+
+    monkeypatch.setattr(vp, "run_clip", fake)
+    out = tmp_path / "out"
+    vp.run_video(_folder(tmp_path, ["A", "B"]), out)
+    assert sorted(f.name for f in (out / "debug" / "damage").iterdir()) == ["r0_w1.png", "r1_w1.png"]  # no clip overwrites another
+    assert not any((out / "work" / c / "debug").exists() for c in ("A", "B"))
 
 
 def test_a_clip_without_a_room_is_listed_and_the_others_are_still_stitched(tmp_path, monkeypatch):
