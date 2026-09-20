@@ -51,6 +51,16 @@ def test_a_scale_bias_in_depth_scales_the_room_by_the_same_factor():
     assert abs(est.rooms[0].area / 20.0 - 1.06**2) < 0.05  # documents what a 6% metric error does to area
 
 
+def test_a_different_scale_error_in_every_photo_is_estimated_from_the_overlaps_and_removed():
+    bias = np.array([1.0, 0.8, 1.25, 0.9, 1.15, 1.0, 0.85, 1.2])  # median 1.0
+    scene, *_ = _scene(noise=0.005, bias=bias)
+    assert np.allclose(scene.scales, bias / np.median(bias), rtol=0.03)
+    assert 0.1 < scene.scale_spread < 0.25 and "depth_scale_inconsistent" not in scene.flags
+    est = estimate(scene.cloud.points, scene.traj_xz, Params())
+    assert len(est.rooms) == 1 and abs(est.rooms[0].area / 20.0 - 1.0) < 0.06
+    assert abs(est.rooms[0].ceiling_height - HEIGHT) < 0.08
+
+
 def test_images_without_a_pose_are_left_out_and_chunks_follow_the_used_images():
     photos, poses, depth, _ = room_photos(ROOM, HEIGHT, STATION, YAWS, noise=0.005)
     poses.rotations[3] = None
