@@ -235,8 +235,21 @@ def run_photo(
         (out / "rooms").mkdir(parents=True, exist_ok=True)
         (out / "rooms" / f"{name}.json").write_text(plan.model_dump_json(indent=2))
         plans.append(plan)
+    for k, plan in enumerate(plans):  # ids unique across the capture: room_k, r{k}_w*, r{k}_o*
+        _renumber(plan.rooms[0], k)
     placed = [p for p in plans if p.rooms[0].polygon]
     result = stitch_plans(placed, capture.name) if placed else plans[0]
-    result.rooms += [p.rooms[0] for p in plans if not p.rooms[0].polygon]  # rooms that could not be built stay in the plan, null
+    # every room folder keeps its own plan: a room the stitcher could not place stays in its own frame, and a
+    # room that could not be built stays as a null room
+    kept = {r.id for r in result.rooms}
+    result.rooms += [p.rooms[0] for p in plans if p.rooms[0].id not in kept]
     _write(result, out)
     return result
+
+
+def _renumber(room: RoomPlan, k: int) -> None:
+    room.id = f"room_{k}"
+    for w in room.walls:
+        w.id = w.id.replace("r0_", f"r{k}_", 1)
+    for o in room.openings:
+        o.id, o.wall_id = o.id.replace("r0_", f"r{k}_", 1), o.wall_id.replace("r0_", f"r{k}_", 1)
