@@ -77,13 +77,21 @@ Seen in our clips:
 - **Clip names do not follow the protocol:** the files are `B1`, `B2`, `BR`, `H1`, `H2`
   (two Hall takes) and `Full`, but `capture_protocol.md` asks for `Hall.MOV` and
   `Hall_2.MOV`. A clip cannot be tied to a room by name without renaming or a table.
+- **Zoom differs between clips of one phone:** the 35 mm-equivalent focal length written
+  into the clips reads 16 (`B1`, `B2`, `BR`), 15 (`H2`) and 14 (`H1`, `Full`), all on the
+  same lens. The focal length found by SfM follows it: about 798 px at 16 mm and 730 px
+  at 14 mm (720 px wide). A single fixed value was wrong by about 9% on `H1` and raised its
+  reprojection error by about 15% (0.72 to 0.84 px). The metadata is a rounded whole
+  number and leaves out the stabilisation crop, so it is used as a starting value that SfM
+  refines (`focal_far_from_metadata` if the result moves more than about 15-18%). The
+  protocol's "0.6x" zoom may not exist on other iPhone models, and the defense uses the
+  tester's own phone.
 
 Expected from how the method works, not yet seen in our data:
 
-- **Lens model tied to one device and zoom:** the focal length is held at 0.6234 of the
-  long image side (about 798 px at 720 px wide) with zero distortion. It is right for the
-  iPhone 16 ultra-wide at 0.6x only; another device or zoom gives a wrong shape without
-  any error. `ground_truth.json` also notes the 0.6x lens distortion is not corrected.
+- **Lens distortion:** it is fixed at zero (refined values came out at 0.00 on the iPhone
+  16), but `ground_truth.json` notes the 0.6x lens distortion is not corrected, and
+  another device may not behave the same.
 - **Rotation metadata:** the `.MOV` stores a 90 degree rotation. Frames come out upright
   only because OpenCV applies it; a decoder that ignores it would give sideways frames
   and a wrong principal point.
