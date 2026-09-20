@@ -28,8 +28,9 @@ from .io_video import extract_keyframes
 from .points_video import build_dense_cloud, to_cloud
 from .render import render_plan
 from .report import capture_plan
-from .schema import CapturePlan, Diagnostics, Measurement
+from .schema import CapturePlan, Diagnostics, Measurement, RoomPlan
 from .sfm import MIN_REGISTERED, run_sfm
+from .stitch import stitch_plans
 from .uncertainty import bootstrap, jackknife_scale
 from .world import estimate_gravity, refine_gravity
 
@@ -140,9 +141,48 @@ def _write(plan: CapturePlan, out: Path) -> None:
     render_plan(plan, out / "plan.png")
 
 
-def run_video(
-    capture: str | Path,
-    out: str | Path,
+def _renumber(room: RoomPlan, k: int) -> None:
+    """Ids unique across a property: every clip's room is ``room_0`` with ``r0_`` walls and openings."""
+    room.id = f"room_{k}"
+    for w in room.walls:
+        w.id = w.id.replace("r0_", f"r{k}_", 1)
+    for o in room.openings:
+        o.id, o.wall_id = o.id.replace("r0_", f"r{k}_", 1), o.wall_id.replace("r0_", f"r{k}_", 1)
+
+
+def run_video(capture: str | Path, out: str | Path, **kw) -> CapturePlan:
+    """One plan for a clip, or one stitched property plan for a folder of clips (each clip is one room).
+
+    Every clip gets its own plan and cache under ``out/rooms/<clip>/``; the rooms are placed in one
+    frame by gluing their doorways (``stitch.py``). A clip that gave no room is listed in the notes, and
+    a room that could not be placed stays in its own frame (``stitching.unplaced``).
+    """
+    t0 = time.perf_counter()
+    capture, out = Path(capture), Path(out)
+    clips = [capture] if capture.is_file() else sorted([*capture.glob("*.MOV"), *capture.glob("*.mp4")])
+    if not clips:
+        raise ValueError(f"no video clips found in {capture}")
+    if len(clips) == 1:
+        return run_clip(clips[0], out, **kw)
+    plans = [run_clip(clip, out / "rooms" / clip.stem, **kw) for clip in clips]
+    built = [p for p in plans if p.rooms and p.rooms[0].polygon]
+    for k, p in enumerate(built):
+        _renumber(p.rooms[0], k)
+    seed = kw.get("seed", 0)
+    if not built:
+        result = _no_plan(capture.name, time.perf_counter() - t0, seed, ["no_clip_gave_a_room"] + [f"{p.capture}: {n}" for p in plans for n in p.diagnostics.notes])
+    else:
+        result = stitch_plans(built, capture.name)
+        kept = {r.id for r in result.rooms}
+        result.rooms += [p.rooms[0] for p in built if p.rooms[0].id not in kept]
+        result.diagnostics.notes += [f"{p.capture}: no room ({', '.join(p.diagnostics.notes)})" for p in plans if p not in built]
+    _write(result, out)
+    return result
+
+
+def run_clip(
+    clip: Path,
+    out: Path,
     replicates: int = 10,
     seed: int = 0,
     scale: float | None = None,
@@ -155,11 +195,6 @@ def run_video(
     """Plan for one clip. ``scale`` (metres per SfM unit) and its relative sigma override the depth model's;
     ``reference_length_m`` is the tape-measured length of the ruler's yellow body (default: ours)."""
     t0 = time.perf_counter()
-    capture, out = Path(capture), Path(out)
-    clips = [capture] if capture.is_file() else sorted([*capture.glob("*.MOV"), *capture.glob("*.mp4")])
-    if len(clips) != 1:
-        raise NotImplementedError(f"{capture} holds {len(clips)} clips; pass one clip file (several rooms are stitched later)")
-    clip = clips[0]
     name = clip.stem
     params = params or Params()
 
