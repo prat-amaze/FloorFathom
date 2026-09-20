@@ -3,12 +3,29 @@
     "Diagnostics": {
       "properties": {
         "frames_used": {
-          "title": "Frames Used",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "depth frames (lidar) or keyframes (video); not used for photos",
+          "title": "Frames Used"
         },
         "points": {
-          "title": "Points",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Points"
         },
         "floor_height_world": {
           "anyOf": [
@@ -19,6 +36,7 @@
               "type": "null"
             }
           ],
+          "default": null,
           "title": "Floor Height World"
         },
         "floor_sharpness": {
@@ -30,6 +48,7 @@
               "type": "null"
             }
           ],
+          "default": null,
           "description": "fraction of all points inside the floor spike",
           "title": "Floor Sharpness"
         },
@@ -48,13 +67,63 @@
         "conventions": {
           "title": "Conventions",
           "type": "string"
+        },
+        "models": {
+          "description": "pretrained models used, as id@revision",
+          "items": {
+            "type": "string"
+          },
+          "title": "Models",
+          "type": "array"
+        },
+        "scale_method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "how metric scale was obtained, e.g. lidar_metric, reference_object, monocular_depth",
+          "title": "Scale Method"
+        },
+        "scale_factor": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "metres per unit of the reconstruction, when there is one",
+          "title": "Scale Factor"
+        },
+        "scale_rel_sigma": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "standard error of the scale as a fraction of it",
+          "title": "Scale Rel Sigma"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
         }
       },
       "required": [
-        "frames_used",
-        "points",
-        "floor_height_world",
-        "floor_sharpness",
         "bootstrap_replicates",
         "seed",
         "seconds",
@@ -225,6 +294,29 @@
           "title": "Id",
           "type": "string"
         },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the room's name in the capture (folder or clip name), if known",
+          "title": "Name"
+        },
+        "frame": {
+          "default": "capture",
+          "description": "capture: coordinates are in the frame shared by the whole capture; room: the room's own local frame, not yet placed relative to the other rooms",
+          "enum": [
+            "capture",
+            "room"
+          ],
+          "title": "Frame",
+          "type": "string"
+        },
         "polygon": {
           "description": "counter-clockwise corner points, plan coordinates",
           "items": {
@@ -263,6 +355,13 @@
           "title": "Openings",
           "type": "array"
         },
+        "stations": {
+          "items": {
+            "$ref": "#/$defs/Station"
+          },
+          "title": "Stations",
+          "type": "array"
+        },
         "flags": {
           "items": {
             "type": "string"
@@ -280,6 +379,43 @@
         "openings"
       ],
       "title": "RoomPlan",
+      "type": "object"
+    },
+    "Station": {
+      "description": "Where the camera stood in the room's frame (a photo, or a place along a video walk).",
+      "properties": {
+        "position": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Position",
+          "type": "array"
+        },
+        "height_above_floor": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "metres",
+          "title": "Height Above Floor"
+        }
+      },
+      "required": [
+        "position"
+      ],
+      "title": "Station",
       "type": "object"
     },
     "Wall": {
@@ -342,7 +478,7 @@
   },
   "properties": {
     "schema_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Schema Version",
       "type": "string"
     },
