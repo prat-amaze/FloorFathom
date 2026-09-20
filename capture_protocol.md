@@ -16,8 +16,10 @@ scanning app for the Photo or Video tiers.
 - Open Camera app → Photo mode.
 - Hold phone in Portrait mode
 - Set zoom to **0.8x** (ultra-wide) before taking room stills. Do not use 1x or 2x.
-- For video, switch to Video mode and set zoom to **0.6x** before recording.
+- For video, switch to standard Video mode (not Cinematic, not Action) and set zoom to
+  **0.6x** (the ultra-wide lens) before recording. Do not change the zoom while recording.
 - Flash: off. Do not use Night mode / long exposure.
+- Turn on the room's lights and open the curtains before you start.
 
 ## How to walk — Photos tier (2–8 stills per room)
 
@@ -32,13 +34,21 @@ scanning app for the Photo or Video tiers.
 
 ## How to walk — Video tier
 
-1. Stand in a doorway or corner. Start recording.
-2. Walk the full perimeter of the room once, keeping the phone at chest height,
-   pointing at the wall/floor/ceiling junction, moving slowly (a few seconds per wall).
-3. For a multi-room capture, keep recording continuously while walking through the
+1. Stand in a doorway or corner, phone upright (portrait) at chest height. Start recording.
+2. Walk the full perimeter of the room once, pointing at the wall/floor/ceiling junction,
+   moving slowly (a few seconds per wall).
+3. Move your feet, not only your wrist: step sideways or forward while you pan. Turning
+   on the spot gives no depth.
+4. Never whip the phone quickly, for example through a doorway: blur breaks the
+   reconstruction. Do not stare at a blank wall or a close-up of a door for more than
+   2 seconds; keep furniture, door frames or corners in view.
+5. Keep your hands, boxes and other objects out of the picture, and keep people and pets
+   out of the room.
+6. For a multi-room capture, keep recording continuously while walking through the
    connecting doorway/hallway into the next room — do not stop and restart between
    rooms.
-4. Stop recording once you're back near your starting point.
+7. Stop recording once you're back near your starting point. Keep each room under
+   about 60 seconds.
 
 ## LiDAR tier
 
@@ -50,19 +60,21 @@ capture.
 
 1. Copy all photos for a room into a folder named after the room
    (e.g. `images/Hall/`, `images/b1/`). Do not rename individual files.
-2. Copy each room's video as a single `.MOV` file named after the room
-   (e.g. `Hall.MOV`). If a room was captured twice (repeatability), suffix the
-   second file with `_2` (e.g. `Hall_2.MOV`).
-3. Upload Everything to a drive(I used Google drive) and download in the Laptop.
-3. Hand the top-level folder (containing the per-room image folders and the `.MOV`
-   files) to the pipeline. No renaming, no re-encoding, no cropping.
+2. Copy each room's video as a single `.MOV` file. Name it after the room (e.g.
+   `Hall.MOV`); the file name becomes the room name in the output. If a room was captured
+   twice (repeatability), suffix the second file with `_2` (e.g. `Hall_2.MOV`).
+3. Send the **original** file: AirDrop, a USB cable, or a drive's original-quality
+   download (I used Google Drive). Never send it through WhatsApp or another messenger:
+   they shrink the video and strip the lens information the pipeline reads.
+4. Do not re-encode, crop or trim the video.
+5. Hand the pipeline one room's photo folder, or one video clip, per run.
 
 ## Device matrix
 
 | Tier   | Device tested         | Notes                                                        |
 |--------|------------------------|---------------------------------------------------------------|
 | Photo  | iPhone 16 (non-Pro)    | 0.8x zoom, native Camera app                                   |
-| Video  | iPhone 16 (non-Pro)    | 0.6x zoom, native Camera app                                   |
+| Video  | iPhone 16 (non-Pro)    | 0.6x zoom, native Camera app. The clip records its own zoom and the pipeline reads it; other iPhone 15+ models are untested. Without a reference object the metric scale comes from a depth model and was off by -1%, +7% and +67% on three clips, so intervals are wide (at least 15%) and rooms are flagged |
 | LiDAR  | *(none available)*     | No Pro-class device on hand; tier run against Cozmo-provided sample data instead of a live capture |
 
 *(This matrix will be updated once a Pro-class device is available to capture and
