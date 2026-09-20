@@ -38,16 +38,21 @@ where the output lands, known limits. Outputs go to `out/` (git-ignored); clear 
 ### LiDAR tier: floor plan, room plans and damage in one command
 
 - `uv run floorfathom plan CozmoData/<scan> --out out/<name>` (`<scan>` is `single_room`, `single_scan_floor_only` or
-  `single_scan_with_ceiling`; 2-5 minutes each).
-- Outputs: `plan.json` (per room: walls, ceiling height, area, openings, `damage`, `concealed_flags`, `scope`, all with
-  95% intervals; plus `stitching`: adjacency, overlaps, footprint, and the drift on/off ablation), `plan.png` (top-down
-  plan), `debug/` (`points.ply`, top-down and height views, and `debug/damage/<surface>.png`: every wall, floor and
-  ceiling unrolled, purple where not judged, damage outlined).
+  `single_scan_with_ceiling`). One command gives everything; no second command is needed.
+- Time, cold (the LiDAR tier uses no caches, so cached is the same): `single_room` 2.0 min, `single_scan_floor_only`
+  4.2 min, `single_scan_with_ceiling` 7.2 min. Per-stage seconds are in `plan.json` `diagnostics.notes`; damage is
+  the largest stage (78, 169 and 319 s), then the bootstrap, then building the cloud.
+- Outputs in `out/<name>/`: `plan.json` (CapturePlan, schema 0.4.0: per room walls, ceiling height, area, openings,
+  `damage`, `concealed_flags`, `scope`, all with 95% intervals; plus `stitching`: adjacency, overlaps, footprint, drift
+  on/off ablation), `rooms/<room id>.json` (that room's CapturePlan, as the photo tier writes), `plan.png` (top-down
+  plan with dimensions, doorways and damage marked with red crosses), `debug/` (`points.ply`, `topdown.png`,
+  `height_hist.png`, and `debug/damage/<surface>.png`: each wall, floor and ceiling unrolled, purple where not judged,
+  damage outlined).
 - Code: `io_lidar`, `points`, `planes`, `estimate`, `layout`, `drift` (pose graph from wall registration), `stitch`,
   `uncertainty`, `report`, `render`, `pipeline.run_lidar`, `lidar_frames` (RGB frames with depth for damage).
 - Limits: no tape truth for `CozmoData/`, so accuracy is unmeasured; only about a quarter of walls meet the wall-length
-  repeatability gate (README). Damage is unverified on real LiDAR damage (none exists) and gives false positives on
-  fixtures and glare.
+  repeatability gate (README). Damage is unverified on real LiDAR damage (none exists in `CozmoData/`), so every region
+  reported on those scans is a false positive (fixtures, glare, door edges).
 
 ### Shared damage stack (used by every tier)
 
