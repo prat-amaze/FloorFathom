@@ -10,6 +10,7 @@ dependencies = [
     "opencv-python-headless",
     "pydantic>=2",
     "matplotlib",
+    "pycolmap",
 ]
 
 [project.scripts]
