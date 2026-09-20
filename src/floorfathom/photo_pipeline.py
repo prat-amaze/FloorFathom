@@ -38,6 +38,7 @@ from .uncertainty import RoomSamples, _iou, _match_edge, jackknife_scale
 
 Z95 = 1.96
 DEPTH_LONG_SIDE = 924
+DEPTH_THREADS = 6  # fixed, not the core count: the model's output depends on how its sums are split across threads
 FRAME_LONG_SIDE = 2016  # the pictures handed to the damage stage: a 3 mm crack is a pixel or two at 1008, four at 2016
 MONO_SCALE_REL_SIGMA = 0.30  # assumed 1-sigma of the depth model's room scale with no reference (four rooms spread 0-65%)
 # 95% half-widths added in quadrature to the sampling spread: (absolute m, relative). Assumed, not calibrated:
@@ -65,7 +66,7 @@ def cached_depth(cache_dir: Path, long_side: int = DEPTH_LONG_SIDE) -> Depth:
         if not model:
             from .depth import DepthEstimator
 
-            model.append(DepthEstimator(threads=1))
+            model.append(DepthEstimator(threads=DEPTH_THREADS))
         z = model[0](rgb, long_side=long_side)
         cache_dir.mkdir(parents=True, exist_ok=True)
         np.save(f, z)
