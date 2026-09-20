@@ -4,17 +4,26 @@ import numpy as np
 from synth import rect
 from synth_photo import CAMERA_HEIGHT, room_photos
 
-from floorfathom.photo_layout import wall_segments
+from floorfathom import layout as L
+from floorfathom.photo_layout import outline_from_segments, wall_segments
 from floorfathom.photo_scene import build_scene
 
 HEIGHT = 2.6
 YAWS = [0, 45, 90, 135, 180, 225, 270, 315]
 
 
-def _cloud(noise=0.005, bias=1.0):
-    photos, poses, depth, _ = room_photos(rect(0, 0, 5, 4), HEIGHT, (2.2, CAMERA_HEIGHT, 1.7), YAWS,
-                                          [8.0] + [0.0] * 7, [5.0] + [0.0] * 7, noise=noise, bias=bias)
+GRID = L.Grid.around(np.array([[-8.0, -8.0], [8.0, 8.0]]))
+
+
+def _cloud(noise=0.005, bias=1.0, walls=None, yaws=YAWS):
+    n = len(yaws)
+    photos, poses, depth, _ = room_photos(walls or rect(0, 0, 5, 4), HEIGHT, (2.2, CAMERA_HEIGHT, 1.7), yaws,
+                                          [8.0] + [0.0] * (n - 1), [5.0] + [0.0] * (n - 1), noise=noise, bias=bias)
     return build_scene(photos, poses, depth).cloud.points
+
+
+def _outline(**kw):
+    return outline_from_segments(wall_segments(_cloud(**kw)), GRID)
 
 
 def test_the_four_walls_of_a_rectangular_room_are_found_at_their_lengths_and_at_right_angles():
@@ -50,3 +59,36 @@ def test_same_cloud_same_walls():
     cloud = _cloud()
     a, b = wall_segments(cloud, seed=2), wall_segments(cloud, seed=2)
     assert [(s.offset, s.t0, s.t1) for s in a] == [(s.offset, s.t0, s.t1) for s in b]
+
+
+def test_the_outline_of_a_rectangular_room_has_four_supported_edges_at_the_true_lengths_and_area():
+    o = _outline()
+    assert len(o.edges) == 4 and all(e.supported for e in o.edges)
+    assert np.allclose(sorted(e.length for e in o.edges), [4, 4, 5, 5], atol=0.1)
+    assert abs(L.signed_area(o.polygon) - 20.0) < 0.3  # positive: counter-clockwise
+    assert all(e.support > 0.85 for e in o.edges)
+    assert np.allclose(o.polygon, [e.p0 for e in o.edges])
+
+
+def test_a_scale_bias_scales_the_outline_lengths_and_area():
+    o = _outline(bias=1.1)
+    assert np.allclose(sorted(e.length for e in o.edges), [4.4, 4.4, 5.5, 5.5], atol=0.15)
+    assert abs(L.signed_area(o.polygon) - 20.0 * 1.21) < 0.6
+
+
+def test_a_doorway_gap_keeps_one_wall_edge_with_lower_support():
+    o = _outline(walls=rect(0, 0, 5, 4, gaps={"n": (1.5, 2.5)}))
+    assert len(o.edges) == 4 and np.allclose(sorted(e.length for e in o.edges), [4, 4, 5, 5], atol=0.15)
+    gappy = [e for e in o.edges if e.support < 0.95]
+    assert len(gappy) == 1 and abs(gappy[0].length - 5) < 0.15 and 0.7 < gappy[0].support < 0.9  # 1 m of 5 m not seen
+
+
+def test_walls_not_seen_leave_unsupported_edges_and_are_not_drawn_as_walls():
+    o = _outline(yaws=[0, 45, 90, 135])  # half of the room was photographed
+    assert o is not None and any(not e.supported for e in o.edges)
+    assert sum(e.length for e in o.edges if not e.supported) > 1.0
+
+
+def test_fewer_than_two_walls_give_no_outline():
+    segs = wall_segments(_cloud())
+    assert outline_from_segments(segs[:1], GRID) is None and outline_from_segments([], GRID) is None
