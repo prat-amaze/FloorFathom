@@ -68,6 +68,7 @@ class RoomScene:
     scale_spread: float  # std of the log scales: how much the model's scale wandered between photos
     rotation: np.ndarray  # root photo frame -> cloud frame
     flags: list[str] = field(default_factory=list)
+    depths: list[np.ndarray] = field(default_factory=list)  # per fused image, its z-depth divided by its scale (cloud metres)
 
 
 def _edge_mask(depth: np.ndarray) -> np.ndarray:
@@ -328,4 +329,5 @@ def build_scene(
         flags.append("floor_plane_uncertain")
     cloud = Cloud(leveled.astype(np.float32), chunk, len(used))
     return RoomScene(cloud, _fan(cloud.points, floor_y), [photos.images[i].name for i in used],
-                     floor_y, tilt, support, scales, scale_spread, rot, flags)
+                     floor_y, tilt, support, scales, scale_spread, rot, flags,
+                     [(zs[k] / scales[k]).astype(np.float32) for k in range(len(used))])
