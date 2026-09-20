@@ -24,7 +24,8 @@ head-to-head vs a consumer app 10%, capture route 5%, process evidence 5%.
 
 - `uv sync`, then `uv run floorfathom plan <capture_folder> --out out/<name>`; tests with `uv run pytest`
   (about 6 minutes, synthetic captures in `tests/synth.py`).
-- LiDAR tier per-room plans work; video and photo tiers are not implemented. See `README.md` for
+- LiDAR tier per-room plans work; the video tier runs end to end per clip but misses its wall and opening
+  gates, and the photo tier's state is in `README.md`'s status table. See `README.md` for
   the module map, verification numbers and known limitations.
 - `schema/capture_plan.schema.json` is generated: after changing `schema.py`, run
   `uv run floorfathom schema > schema/capture_plan.schema.json` (a test checks they match).
