@@ -40,7 +40,7 @@ SCALE_FLOOR_REL = 0.15  # relative uncertainty of a depth-model-only scale: an a
 STRIP_WINDOW_S = 15.0  # the protocol puts the strip move at the start of the clip
 STRIP_SCALE_RATIO_OK = (0.5, 2.0)  # strip scale / depth-model scale outside this: not the strip
 STRIP_LENGTH_REL = 0.004  # 1 mm on 30 cm plus the edges of the yellow part: how well the ruler itself is known
-KEYFRAME_STEP_S = 0.15  # one keyframe per this many seconds; SfM time grows faster than the keyframe count
+KEYFRAME_STEP_S = 0.2  # one keyframe per this many seconds; SfM time grows faster than the keyframe count (0.15 s: 25-35 min per clip, 0.3 s: 11 min but lost the H1 ceiling)
 TARGET_DENSE_FRAMES = 50
 N_CHUNKS = 10
 CONVENTIONS = "SfM (pycolmap) poses; depth-model depth fitted to SfM; world +y up from floor and ceiling planes"
@@ -205,7 +205,7 @@ def run_clip(
 
     work = out / "work"
     st = clip.stat()
-    sfm_stamp = f"v1:{clip.name}:{st.st_size}:{int(st.st_mtime)}:seed{seed}"
+    sfm_stamp = f"v2:{clip.name}:{st.st_size}:{int(st.st_mtime)}:seed{seed}"
     if keyframe_step_s != KEYFRAME_STEP_S:  # caches made at the default spacing keep their stamp
         sfm_stamp += f":step{keyframe_step_s:g}"
     kf = extract_keyframes(clip, work / "frames", step_s=keyframe_step_s)
