@@ -30,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tier", choices=["lidar", "video", "photo"], help="input tier (default: detect from the folder)")
     p.add_argument("--bootstrap", type=int, default=20, help="bootstrap replicates for the intervals (default: 20)")
     p.add_argument("--seed", type=int, default=0, help="random seed for the bootstrap (default: 0)")
+    p.add_argument("--reference-length-cm", type=float, help="photo and video tiers: length of the ruler's yellow body in cm, measured with a tape (default: 31.6, our ruler)")
     p.add_argument("--no-debug", action="store_true", help="skip the debug folder (point cloud, top-down view)")
 
     sub.add_parser("schema", help="print the JSON Schema of the output")
@@ -55,7 +56,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {args.capture} does not exist", file=sys.stderr)
         return 2
     try:
-        plan = run(args.capture, args.out, tier=args.tier, replicates=args.bootstrap, seed=args.seed, debug=not args.no_debug)
+        extra = {} if args.reference_length_cm is None else {"reference_length_m": args.reference_length_cm / 100}
+        plan = run(args.capture, args.out, tier=args.tier, replicates=args.bootstrap, seed=args.seed, debug=not args.no_debug, **extra)
     except NotImplementedError as e:
         print(f"error: {e}", file=sys.stderr)
         return 3
