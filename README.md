@@ -11,10 +11,11 @@ the Cozmo AI case study (`Applied AI.pdf`).
 | Video | Not started. |
 | Photos | Not started. |
 
-Not done for the LiDAR tier either: stitching rooms into one property plan with drift
-correction, damage regions, concealed-damage flags, scope items. The rooms of a
-multi-room scan are already placed in one coordinate frame, but not yet checked for
-drift or connected into an adjacency graph.
+Whole-property stitching (`stitch.py`) is built and tested on synthetic layouts: doorway
+adjacency, overlap check, footprint with an interval, and placement of rooms that arrive
+in their own frames (video, photo) by gluing their doorways. It has not been run on real
+video or photo rooms yet. Not done for the LiDAR tier: damage regions, concealed-damage
+flags, scope items.
 
 ## Run it
 
@@ -60,6 +61,14 @@ Timing on the sample scans (laptop, CPU): `single_room` 37 s, `single_scan_floor
    spread, plus an assumed systematic term. Rooms whose shape flips between replicates
    are flagged and their interval is stretched to cover the disagreement.
 6. `report.py`, `schema.py`, `render.py`, `debug.py`, `cli.py`: contract, drawing, CLI.
+7. `stitch.py`: each doorway is linked to the nearest other room outline within 1.5 m (the
+   gap is kept as evidence), overlapping rooms are found, the footprint is the union of
+   the room polygons. Rooms in their own frames are placed by gluing doorway to doorway
+   (inward normals opposite, centres one assumed 0.15 m wall apart), most certain room
+   first; a room with no doorway that fits is reported as unplaced, near-ties are flagged.
+8. `drift.py`: per-chunk (x, z, yaw) drift from wall registration between time chunks of
+   the walk, weighted by how well each pair constrains it. Measured on every LiDAR run
+   and reported in `plan.json` (`stitching.drift`), not applied.
 
 ## Verification
 
@@ -90,6 +99,26 @@ consistency only.
   walks did not see the same things), but the estimator also leaks into narrow spaces
   behind doorways and splits walls differently between scans.
 
+### Drift ablation (footprint with the correction on and off)
+
+Poses are used as recorded, and drift is measured and reported, so this is a decision with
+evidence and not an omission. `drift.py` recovers injected drift on synthetic walks (14 cm and
+0.7 degrees down to under 2 cm, `tests/test_drift.py`). On the sample scans it finds chunks up to
+16-22 cm and 2-4 degrees apart, and the registration disagreement (chi2) falls by 95%. The
+footprint moves little, and repeat walks do not agree better:
+
+| Scan | Footprint, drift off | on, prior 5 cm / 0.5 deg | on, prior 2 cm / 0.2 deg |
+|---|---|---|---|
+| `single_scan_with_ceiling` | 58.4 m2, 6 rooms | 58.0 m2, 6 rooms (-0.7%) | 56.6 m2, 6 rooms (-3.0%) |
+| `single_scan_floor_only` | 52.3 m2, 6 rooms | 51.3 m2, 5 rooms (-1.9%) | 50.7 m2, 5 rooms (-3.0%) |
+
+Two walks of one flat (`scripts/cross_scan_repeatability.py [--drift]`), off against on with
+prior 2 cm / 0.2 deg: 6 vs 5 matched rooms, mean IoU 0.77 vs 0.78, summed area difference
+7.2 vs 10.9 m2, median wall difference 44 vs 55 cm. With prior 5 cm one room grew by 56%.
+Correction is not applied because it does not make the walks agree better; a correction that
+lowers the chi2 but not the disagreement with an independent walk is fitting the estimator,
+not the drift. The step tolerances of the estimate are assumptions, not calibrated.
+
 ## Known limitations
 
 - Windows are not detected at the LiDAR tier (glass, partial-height gaps); only
@@ -100,7 +129,11 @@ consistency only.
   wider than 1.1 m (open plan, or a real doorway that wide) are merged with it.
 - The systematic terms of the intervals (pose drift, plane offset) are assumptions in
   `uncertainty.py`, to be calibrated against tape measurements.
-- Poses are used as-is. Drift is not corrected yet; it matters for stitching rooms.
+- Poses are used as recorded; drift is measured but not corrected (see the ablation above).
+- Rooms placed by doorways assume a 0.15 m wall between them; a wrong thickness shifts each
+  hung room by the difference. Two doorways of equal width whose rooms fit either way are
+  flagged `placement_ambiguous`. Rooms with no visible doorway (a closed door leaf, or a few
+  photos) cannot be placed and are listed in `stitching.unplaced`.
 
 ## Layout
 
