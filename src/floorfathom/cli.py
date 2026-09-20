@@ -51,8 +51,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 3
         return 0
-    if not args.capture.is_dir():
-        print(f"error: {args.capture} is not a folder", file=sys.stderr)
+    if not args.capture.exists():
+        print(f"error: {args.capture} does not exist", file=sys.stderr)
         return 2
     try:
         plan = run(args.capture, args.out, tier=args.tier, replicates=args.bootstrap, seed=args.seed, debug=not args.no_debug)
