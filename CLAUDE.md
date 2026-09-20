@@ -88,4 +88,22 @@ where the output lands, known limits. Outputs go to `out/` (git-ignored); clear 
 
 ### Photo-tier damage
 
-(owner fills)
+- Part of the photo command, no separate step: `uv run floorfathom plan Data --tier photo --out out/photo --reference-length-cm 31.6`
+  (the room command on one folder works too). Damage adds about 23 s to a run with cached depth (B1 8.5 s, B2 3.9 s, Hall 10.8 s);
+  the depth model dominates a cold run.
+- Outputs: `plan.json` (per room `damage`, `concealed_flags`, `scope`; sizes in metres with 95% intervals that include the
+  scale uncertainty, about +-30% when no ruler was found) and `debug/damage/<surface>.png` (each judged wall and the ceiling
+  unrolled, purple where not judged, damage outlined). `damage_coverage_partial` and the `diagnostics` notes say what could
+  not be judged.
+- Code: `photo_damage.assess` runs the shared `assess.assess_room` on the room's frames from one spot (one view is enough,
+  no relief, depth only rejects pixels that are not on the wall; walls and ceiling only, the floor is glossy tile), then gives the
+  room's copy in the stitched plan the same regions (`damage_frame.reframe_damage` moves ceiling regions with the room) and
+  recomputes its flags and scope with the neighbouring rooms in view.
+- Dev tools: `scripts/eval_damage_photo.py out/photo/plan.json` (scores the tape-measured items of `ground_truth.json`),
+  `scripts/export_photo_patches.py Data out/damage_patches/photo --cache-dir out/photo` (saves the real unrolled patches
+  for `scripts/eval_damage_patches.py --dir`; needs the depth cache of a finished run).
+- Limits (first real run, rules-based detector): the staged 21 x 25 cm leakage mark in the Hall was found at 22.5 x 25.5 cm,
+  both tape values inside the intervals. The 12 x 22 cm kitchen crack was not found: the Hall walls facing the kitchen are
+  mostly not seen face on, and a hairline crack is not resolvable in stills. The run gave 7 other regions, all false: door
+  frame edges and grain as cracks, a power socket as mould, window bars, a curtain and a wardrobe edge as cracks or soot. On
+  the 22 real patches 6 of 23 checks fail. Only one room in a run has a tape-measured mark, so the size error is one sample.
