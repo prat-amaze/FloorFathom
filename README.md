@@ -67,8 +67,10 @@ Timing on the sample scans (laptop, CPU): `single_room` 37 s, `single_scan_floor
    (inward normals opposite, centres one assumed 0.15 m wall apart), most certain room
    first; a room with no doorway that fits is reported as unplaced, near-ties are flagged.
 8. `drift.py`: per-chunk (x, z, yaw) drift from wall registration between time chunks of
-   the walk, weighted by how well each pair constrains it. Measured on every LiDAR run
-   and reported in `plan.json` (`stitching.drift`), not applied.
+   the walk, weighted by how well each pair constrains it. Applied to every LiDAR run
+   before the room estimate, with the on/off footprint ablation reported in `plan.json`
+   (`stitching.drift`). `run_lidar(correct_drift=False)` switches the correction off and
+   `drift_ablation=False` skips the extra uncorrected run (there is no CLI flag for either).
 
 ## Verification
 
@@ -101,23 +103,26 @@ consistency only.
 
 ### Drift ablation (footprint with the correction on and off)
 
-Poses are used as recorded, and drift is measured and reported, so this is a decision with
-evidence and not an omission. `drift.py` recovers injected drift on synthetic walks (14 cm and
-0.7 degrees down to under 2 cm, `tests/test_drift.py`). On the sample scans it finds chunks up to
-16-22 cm and 2-4 degrees apart, and the registration disagreement (chi2) falls by 95%. The
-footprint moves little, and repeat walks do not agree better:
+The walk is drift-corrected by default and every run reports its own on/off footprint. `drift.py`
+recovers injected drift on synthetic walks (14 cm and 0.7 degrees down to under 2 cm,
+`tests/test_drift.py`). On the sample scans it finds chunks up to 16-22 cm and 2-4 degrees apart,
+and the registration disagreement (chi2) falls by 95%. The footprint moves little:
 
-| Scan | Footprint, drift off | on, prior 5 cm / 0.5 deg | on, prior 2 cm / 0.2 deg |
+| Scan | Footprint, drift off | on, prior 5 cm / 0.5 deg (default) | on, prior 2 cm / 0.2 deg |
 |---|---|---|---|
 | `single_scan_with_ceiling` | 58.4 m2, 6 rooms | 58.0 m2, 6 rooms (-0.7%) | 56.6 m2, 6 rooms (-3.0%) |
 | `single_scan_floor_only` | 52.3 m2, 6 rooms | 51.3 m2, 5 rooms (-1.9%) | 50.7 m2, 5 rooms (-3.0%) |
 
-Two walks of one flat (`scripts/cross_scan_repeatability.py [--drift]`), off against on with
-prior 2 cm / 0.2 deg: 6 vs 5 matched rooms, mean IoU 0.77 vs 0.78, summed area difference
-7.2 vs 10.9 m2, median wall difference 44 vs 55 cm. With prior 5 cm one room grew by 56%.
-Correction is not applied because it does not make the walks agree better; a correction that
-lowers the chi2 but not the disagreement with an independent walk is fitting the estimator,
-not the drift. The step tolerances of the estimate are assumptions, not calibrated.
+Honest caveat: there is no tape truth for these scans, so this does not show that the
+correction is more accurate. Two different recordings of the same flat (`single_scan_with_ceiling`
+and `single_scan_floor_only`, `scripts/cross_scan_repeatability.py [--drift]`), off against on with
+prior 2 cm / 0.2 deg: 6 vs 5 matched rooms, mean IoU 0.77 vs 0.78, summed area difference 7.2 vs
+10.9 m2, median wall difference 44 vs 55 cm. With prior 5 cm one room grew by 56%. The recordings
+do not see the same things, so this is a weak test, but the correction did not improve it. It is on
+because the poses must not be taken as recorded when the walk is long, and the effect on the
+footprint is small either way; the step tolerances of the estimate are assumptions, not calibrated,
+and the default prior was fixed before this comparison, not tuned on it. A floor-only scan lost a
+room (6 to 5) with the correction on, which is the failure to watch.
 
 ## Known limitations
 
@@ -129,7 +134,8 @@ not the drift. The step tolerances of the estimate are assumptions, not calibrat
   wider than 1.1 m (open plan, or a real doorway that wide) are merged with it.
 - The systematic terms of the intervals (pose drift, plane offset) are assumptions in
   `uncertainty.py`, to be calibrated against tape measurements.
-- Poses are used as recorded; drift is measured but not corrected (see the ablation above).
+- Drift is corrected in blocks of walk chunks, which can leave small steps at chunk boundaries; a smooth
+  pose-level correction was not finished. Whether the correction improves accuracy is untested without tape truth.
 - Rooms placed by doorways assume a 0.15 m wall between them; a wrong thickness shifts each
   hung room by the difference. Two doorways of equal width whose rooms fit either way are
   flagged `placement_ambiguous`. Rooms with no visible doorway (a closed door leaf, or a few
