@@ -61,6 +61,27 @@ def _lidar_stitching(raw, raw_traj, plan: CapturePlan, params: Params, drift, ab
     return describe(plan.rooms, [], [], text)
 
 
+def _lidar_damage(scan, traj, drift, plan: CapturePlan) -> list[str]:
+    """Damage, concealed-damage flags and scope of every room, from the scan's own RGB and depth frames."""
+    from .assess import assess_room
+    from .lidar_frames import LidarFrames
+
+    floor_y = plan.diagnostics.floor_height_world
+    if floor_y is None:
+        return ["damage was not assessed: no floor plane was found"]
+    frames = LidarFrames(scan, traj, drift)
+    notes: list[str] = []
+    try:
+        for room in plan.rooms:
+            ch = room.ceiling_height.value
+            ceiling_y = None if ch is None else floor_y + ch
+            others = [r for r in plan.rooms if r is not room]
+            notes += [f"{room.id}: {n}" for n in assess_room(room, floor_y, ceiling_y, frames.for_room(room), others)]
+    finally:
+        frames.close()
+    return notes
+
+
 def run_lidar(
     capture: Path,
     out: Path,
@@ -72,6 +93,7 @@ def run_lidar(
     params: Params | None = None,
     correct_drift: bool = True,
     drift_ablation: bool = True,
+    assess_damage: bool = True,
 ) -> CapturePlan:
     t0 = time.perf_counter()
     params = params or Params()
@@ -104,6 +126,13 @@ def run_lidar(
         jackknife_scale(n_chunks, 2),
     )
     plan.stitching = _lidar_stitching(raw, raw_traj, plan, params, drift, drift_ablation, why_not)
+    if assess_damage:
+        plan.diagnostics.notes += _lidar_damage(scan, traj, drift, plan)
+        plan.diagnostics.notes.append(
+            "Damage classes, concealed-damage rules and scope actions are our own definitions, tuned on synthetic surfaces; "
+            "no real damage was available to check them (README)."
+        )
+        plan.diagnostics.seconds = time.perf_counter() - t0
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.json").write_text(plan.model_dump_json(indent=2))
     render_plan(plan, out / "plan.png")
