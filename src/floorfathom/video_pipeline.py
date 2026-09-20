@@ -3,15 +3,17 @@
 keyframes -> SfM poses -> rough gravity -> dense cloud (depth model fitted to SfM) -> refined
 gravity -> the same room estimator and leave-chunks-out intervals as the LiDAR tier.
 
-Metric scale comes from the depth model's median unless a scale is passed in (a reference object,
-see ``anchor.py``). The depth model alone was off by -1%, +7% and +67% on three clips, so its scale
-carries a wide relative uncertainty that is added to every interval, and every room is flagged
-``scale_from_depth_model_only``. A failed reconstruction gives a plan with no rooms and the reason,
-never an invented number.
+Metric scale comes from the reference ruler of the capture protocol (a ruler with a 31.6 cm yellow body) when it is found at the
+start of the clip and is plausible (``anchor.py``). Otherwise it comes from the depth model's
+median, which alone was off by -1%, +7% and +67% on three clips: its scale then carries a wide
+relative uncertainty that is added to every interval, and every room is flagged
+``scale_from_depth_model_only`` with the reason the strip was not used. A failed reconstruction
+gives a plan with no rooms and the reason, never an invented number.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import pickle
 import time
@@ -20,6 +22,7 @@ from typing import Callable
 
 import numpy as np
 
+from .anchor import REFERENCE_LENGTH_M, VIDEO_STRIP_COLOUR, estimate_anchor, track_strip
 from .estimate import Params, estimate, make_grid
 from .io_video import extract_keyframes
 from .points_video import build_dense_cloud, to_cloud
@@ -32,6 +35,9 @@ from .world import estimate_gravity, refine_gravity
 
 DEPTH_LONG_SIDE = 924  # the depth model's scale depends on its input size; never mix sizes
 SCALE_FLOOR_REL = 0.15  # relative uncertainty of a depth-model-only scale: an assumption, to be calibrated
+STRIP_WINDOW_S = 15.0  # the protocol puts the strip move at the start of the clip
+STRIP_SCALE_RATIO_OK = (0.5, 2.0)  # strip scale / depth-model scale outside this: not the strip
+STRIP_LENGTH_REL = 0.004  # 1 mm on 30 cm plus the edges of the yellow part: how well the ruler itself is known
 TARGET_DENSE_FRAMES = 50
 N_CHUNKS = 10
 CONVENTIONS = "SfM (pycolmap) poses; depth-model depth fitted to SfM; world +y up from floor and ceiling planes"
@@ -59,6 +65,23 @@ def _scale_rel_sigma(ratios: dict[int, float]) -> float:
     med = float(np.median(r))
     se = 1.2533 * 1.4826 * float(np.median(np.abs(r - med))) / med / np.sqrt(len(r))  # standard error of the median
     return float(np.hypot(SCALE_FLOOR_REL, se))
+
+
+def _choose_scale(
+    kf, sfm, depth_scale: float, depth_rel: float, reference_length_m: float = REFERENCE_LENGTH_M
+) -> tuple[float, float, str, list[str]]:
+    """(metres per SfM unit, relative sigma, method, flags): the reference strip when it is found
+    and plausible, else the depth model's scale with the reason the strip was not used."""
+    obs = track_strip(kf, sfm, until_s=STRIP_WINDOW_S, colour=VIDEO_STRIP_COLOUR)
+    anchor = estimate_anchor(sfm, obs, reference_length_m) if len(obs) >= 3 else None
+    if anchor is None:
+        return depth_scale, depth_rel, "monocular_depth", ["reference_strip_not_found"]
+    bad = list(anchor.flags)
+    if not STRIP_SCALE_RATIO_OK[0] <= anchor.scale / depth_scale <= STRIP_SCALE_RATIO_OK[1]:
+        bad.append("reference_strip_implausible")  # far from any depth-model error seen: probably another object
+    if bad:
+        return depth_scale, depth_rel, "monocular_depth", ["reference_strip_rejected", *bad]
+    return anchor.scale, float(np.hypot(anchor.rel_sigma, STRIP_LENGTH_REL)), "reference_object", []
 
 
 def _no_plan(name: str, seconds: float, seed: int, notes: list[str], sfm=None, n_keyframes: int = 0) -> CapturePlan:
@@ -97,6 +120,20 @@ def _load_or_run(cache: Path, stamp: str, compute):
     return value
 
 
+def write_alignment(path: Path, rotation: np.ndarray, scale: float, floor_y: float | None, size: tuple[int, int]) -> None:
+    """Save how SfM coordinates map into the plan's frame, so posed keyframes can be placed on the plan's walls.
+
+    A SfM point ``p`` is ``q = (p @ rotation.T) * scale`` in the plan frame: x and z are the plan's axes (the
+    polygons and walls use (x, z)), y is up, in metres. A keyframe's centre is placed the same way and its
+    camera-to-world rotation is ``rotation @ cam_to_world``; wall heights are ``y - floor_y``.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "rotation": np.asarray(rotation).tolist(), "scale": float(scale), "floor_y": floor_y, "image_size": list(size),
+        "frame": "q = (p @ rotation.T) * scale; plan (x, z), y up; camera-to-world in this frame = rotation @ cam_to_world",
+    }, indent=2))
+
+
 def _write(plan: CapturePlan, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.json").write_text(plan.model_dump_json(indent=2))
@@ -110,11 +147,13 @@ def run_video(
     seed: int = 0,
     scale: float | None = None,
     scale_rel_sigma: float | None = None,
+    reference_length_m: float | None = None,
     depth: Depth | None = None,
     params: Params | None = None,
     **_ignored,
 ) -> CapturePlan:
-    """Plan for one clip. ``scale`` (metres per SfM unit) and its relative sigma override the depth model's."""
+    """Plan for one clip. ``scale`` (metres per SfM unit) and its relative sigma override the depth model's;
+    ``reference_length_m`` is the tape-measured length of the ruler's yellow body (default: ours)."""
     t0 = time.perf_counter()
     capture, out = Path(capture), Path(out)
     clips = [capture] if capture.is_file() else sorted([*capture.glob("*.MOV"), *capture.glob("*.mp4")])
@@ -150,10 +189,11 @@ def run_video(
         return plan
 
     if scale is None:
-        scale, rel = dense.scale_from_depth_model, _scale_rel_sigma(dense.frame_ratio)
-        method = "monocular_depth"
+        scale, rel, method, scale_flags = _choose_scale(
+            kf, sfm, dense.scale_from_depth_model, _scale_rel_sigma(dense.frame_ratio), reference_length_m or REFERENCE_LENGTH_M
+        )
     else:
-        rel, method = scale_rel_sigma if scale_rel_sigma is not None else 0.03, "reference_object"
+        rel, method, scale_flags = scale_rel_sigma if scale_rel_sigma is not None else 0.03, "reference_object", []
 
     rough = estimate_gravity(sfm)
     refined = refine_gravity(to_cloud(dense, rough.rotation, scale=scale).points)
@@ -162,13 +202,14 @@ def run_video(
     traj = (sfm.centers[sfm.registered] @ rotation.T * scale)[:, [0, 2]]
 
     ref = estimate(cloud.points, traj, params, grid=make_grid(cloud.points, traj))
+    write_alignment(work / "alignment.json", rotation, scale, None if ref.floor is None else float(ref.floor.y), sfm.image_size)
     samples = bootstrap(cloud, traj, ref, params, replicates=replicates, seed=seed)
     plan = capture_plan(
         name, "video", ref, samples, replicates, seed, len(dense.frame_ratio), len(cloud),
         time.perf_counter() - t0, None if ref.floor is None else ref.floor.sharpness, jackknife_scale(N_CHUNKS, 2),
     )
 
-    flags = list(dict.fromkeys(sfm.flags + dense.flags + rough.flags + refined.flags))
+    flags = list(dict.fromkeys(sfm.flags + dense.flags + rough.flags + refined.flags + scale_flags))
     if method == "monocular_depth":
         flags.append("scale_from_depth_model_only")
     for room in plan.rooms:
@@ -183,7 +224,7 @@ def run_video(
     d = plan.diagnostics
     d.conventions, d.scale_method, d.scale_factor, d.scale_rel_sigma = CONVENTIONS, method, round(scale, 5), round(rel, 4)
     d.notes = flags + ([] if plan.rooms else ["no_room_found"])
-    if method == "monocular_depth":
+    if depth is None:  # the default depth model builds the dense cloud whatever gave the scale
         from .models import DEPTH, REGISTRY
 
         d.models = [f"{DEPTH}@{REGISTRY[DEPTH].revision[:10]}"]
