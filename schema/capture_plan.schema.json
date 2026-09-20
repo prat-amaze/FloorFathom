@@ -1,14 +1,166 @@
 {
   "$defs": {
+    "ConcealedFlag": {
+      "description": "Damage that may continue out of sight, with the rule that says so.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "rule": {
+          "title": "Rule",
+          "type": "string"
+        },
+        "surface": {
+          "$ref": "#/$defs/SurfaceRef"
+        },
+        "damage_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Damage Ids",
+          "type": "array"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "rule",
+        "surface",
+        "damage_ids",
+        "reason"
+      ],
+      "title": "ConcealedFlag",
+      "type": "object"
+    },
+    "DamageRegion": {
+      "description": "A patch of one surface that looks or measures unlike the rest of it.\n\nSurface coordinates are metres: on a wall ``(s, h)`` is the distance along the wall from its start and the\nheight above the floor; on the ceiling and the floor they are the plan coordinates. The classes are our own\ntaxonomy; ``other_anomaly`` keeps a region that fits none of them.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "surface": {
+          "$ref": "#/$defs/SurfaceRef"
+        },
+        "damage_class": {
+          "enum": [
+            "water_stain",
+            "mould",
+            "structural_crack",
+            "peeling_paint",
+            "soot_or_fire",
+            "efflorescence",
+            "hole_or_impact",
+            "sagging_or_bulging",
+            "other_anomaly"
+          ],
+          "title": "Damage Class",
+          "type": "string"
+        },
+        "class_confidence": {
+          "description": "0 to 1; how well the region fits its class rule, not a probability",
+          "title": "Class Confidence",
+          "type": "number"
+        },
+        "polygon": {
+          "description": "outline in surface coordinates",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "title": "Polygon",
+          "type": "array"
+        },
+        "centre": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Centre",
+          "type": "array"
+        },
+        "width": {
+          "$ref": "#/$defs/Measurement",
+          "description": "extent along s (x on ceiling and floor)"
+        },
+        "height": {
+          "$ref": "#/$defs/Measurement",
+          "description": "extent along h (y on ceiling and floor)"
+        },
+        "length": {
+          "$ref": "#/$defs/Measurement",
+          "description": "longest side of the region's oriented box"
+        },
+        "area": {
+          "$ref": "#/$defs/Measurement"
+        },
+        "evidence": {
+          "description": "the measured features that decided the class",
+          "title": "Evidence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "surface",
+        "damage_class",
+        "class_confidence",
+        "polygon",
+        "centre",
+        "width",
+        "height",
+        "length",
+        "area",
+        "evidence"
+      ],
+      "title": "DamageRegion",
+      "type": "object"
+    },
     "Diagnostics": {
       "properties": {
         "frames_used": {
-          "title": "Frames Used",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "depth frames (lidar) or keyframes (video); not used for photos",
+          "title": "Frames Used"
         },
         "points": {
-          "title": "Points",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Points"
         },
         "floor_height_world": {
           "anyOf": [
@@ -19,6 +171,7 @@
               "type": "null"
             }
           ],
+          "default": null,
           "title": "Floor Height World"
         },
         "floor_sharpness": {
@@ -30,6 +183,7 @@
               "type": "null"
             }
           ],
+          "default": null,
           "description": "fraction of all points inside the floor spike",
           "title": "Floor Sharpness"
         },
@@ -48,19 +202,120 @@
         "conventions": {
           "title": "Conventions",
           "type": "string"
+        },
+        "models": {
+          "description": "pretrained models used, as id@revision",
+          "items": {
+            "type": "string"
+          },
+          "title": "Models",
+          "type": "array"
+        },
+        "scale_method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "how metric scale was obtained, e.g. lidar_metric, reference_object, monocular_depth",
+          "title": "Scale Method"
+        },
+        "scale_factor": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "metres per unit of the reconstruction, when there is one",
+          "title": "Scale Factor"
+        },
+        "scale_rel_sigma": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "standard error of the scale as a fraction of it",
+          "title": "Scale Rel Sigma"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
         }
       },
       "required": [
-        "frames_used",
-        "points",
-        "floor_height_world",
-        "floor_sharpness",
         "bootstrap_replicates",
         "seed",
         "seconds",
         "conventions"
       ],
       "title": "Diagnostics",
+      "type": "object"
+    },
+    "Link": {
+      "description": "Which room a doorway opens onto.",
+      "properties": {
+        "room": {
+          "title": "Room",
+          "type": "string"
+        },
+        "opening": {
+          "title": "Opening",
+          "type": "string"
+        },
+        "other": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the room behind the doorway; null if none is within 1.5 m (outside, or not captured)",
+          "title": "Other"
+        },
+        "gap": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "metres from the doorway to the other room's outline; a wall thickness is a real link",
+          "title": "Gap"
+        },
+        "mutual": {
+          "description": "the other room has a doorway of its own next to this one",
+          "title": "Mutual",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "room",
+        "opening",
+        "other",
+        "gap",
+        "mutual"
+      ],
+      "title": "Link",
       "type": "object"
     },
     "Measurement": {
@@ -219,10 +474,162 @@
       "title": "Opening",
       "type": "object"
     },
+    "Overlap": {
+      "properties": {
+        "a": {
+          "title": "A",
+          "type": "string"
+        },
+        "b": {
+          "title": "B",
+          "type": "string"
+        },
+        "area": {
+          "description": "m2 of floor both rooms claim",
+          "title": "Area",
+          "type": "number"
+        }
+      },
+      "required": [
+        "a",
+        "b",
+        "area"
+      ],
+      "title": "Overlap",
+      "type": "object"
+    },
+    "Placement": {
+      "description": "How a room in its own frame was moved into the shared frame, by gluing doorways.",
+      "properties": {
+        "room": {
+          "title": "Room",
+          "type": "string"
+        },
+        "angle": {
+          "description": "radians counter-clockwise, about the room's own origin, applied before the shift",
+          "title": "Angle",
+          "type": "number"
+        },
+        "shift": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Shift",
+          "type": "array"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the placed room this one hangs off; null for the root",
+          "title": "Host"
+        },
+        "host_opening": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Host Opening"
+        },
+        "opening": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "this room's doorway that meets the host's",
+          "title": "Opening"
+        },
+        "overlap": {
+          "description": "m2 shared with the rooms already placed",
+          "title": "Overlap",
+          "type": "number"
+        },
+        "width_diff": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "metres between the two sides of the doorway",
+          "title": "Width Diff"
+        },
+        "margin": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "runner-up cost minus this cost; small means the placement is ambiguous",
+          "title": "Margin"
+        }
+      },
+      "required": [
+        "room",
+        "angle",
+        "shift",
+        "host",
+        "host_opening",
+        "opening",
+        "overlap",
+        "width_diff",
+        "margin"
+      ],
+      "title": "Placement",
+      "type": "object"
+    },
     "RoomPlan": {
       "properties": {
         "id": {
           "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the room's name in the capture (folder or clip name), if known",
+          "title": "Name"
+        },
+        "frame": {
+          "default": "capture",
+          "description": "capture: coordinates are in the frame shared by the whole capture; room: the room's own local frame, not yet placed relative to the other rooms",
+          "enum": [
+            "capture",
+            "room"
+          ],
+          "title": "Frame",
           "type": "string"
         },
         "polygon": {
@@ -263,6 +670,34 @@
           "title": "Openings",
           "type": "array"
         },
+        "stations": {
+          "items": {
+            "$ref": "#/$defs/Station"
+          },
+          "title": "Stations",
+          "type": "array"
+        },
+        "damage": {
+          "items": {
+            "$ref": "#/$defs/DamageRegion"
+          },
+          "title": "Damage",
+          "type": "array"
+        },
+        "concealed_flags": {
+          "items": {
+            "$ref": "#/$defs/ConcealedFlag"
+          },
+          "title": "Concealed Flags",
+          "type": "array"
+        },
+        "scope": {
+          "items": {
+            "$ref": "#/$defs/ScopeItem"
+          },
+          "title": "Scope",
+          "type": "array"
+        },
         "flags": {
           "items": {
             "type": "string"
@@ -280,6 +715,154 @@
         "openings"
       ],
       "title": "RoomPlan",
+      "type": "object"
+    },
+    "ScopeItem": {
+      "description": "One line of repair work, keyed to a surface.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "surface": {
+          "$ref": "#/$defs/SurfaceRef"
+        },
+        "damage_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Damage Ids",
+          "type": "array"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Measurement",
+          "description": "m2 of surface, or m of crack"
+        }
+      },
+      "required": [
+        "id",
+        "surface",
+        "damage_ids",
+        "action",
+        "quantity"
+      ],
+      "title": "ScopeItem",
+      "type": "object"
+    },
+    "Station": {
+      "description": "Where the camera stood in the room's frame (a photo, or a place along a video walk).",
+      "properties": {
+        "position": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Position",
+          "type": "array"
+        },
+        "height_above_floor": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "metres",
+          "title": "Height Above Floor"
+        }
+      },
+      "required": [
+        "position"
+      ],
+      "title": "Station",
+      "type": "object"
+    },
+    "Stitching": {
+      "description": "The rooms as one property: adjacency, placement, overlaps and footprint.",
+      "properties": {
+        "footprint": {
+          "$ref": "#/$defs/Measurement",
+          "description": "m2 of floor covered by all placed rooms, overlaps counted once"
+        },
+        "links": {
+          "items": {
+            "$ref": "#/$defs/Link"
+          },
+          "title": "Links",
+          "type": "array"
+        },
+        "placements": {
+          "description": "empty when the rooms were already in one frame",
+          "items": {
+            "$ref": "#/$defs/Placement"
+          },
+          "title": "Placements",
+          "type": "array"
+        },
+        "overlaps": {
+          "items": {
+            "$ref": "#/$defs/Overlap"
+          },
+          "title": "Overlaps",
+          "type": "array"
+        },
+        "unplaced": {
+          "description": "rooms with no doorway that fits anywhere",
+          "items": {
+            "type": "string"
+          },
+          "title": "Unplaced",
+          "type": "array"
+        },
+        "drift": {
+          "description": "what was done about pose drift, and what it was not",
+          "title": "Drift",
+          "type": "string"
+        }
+      },
+      "required": [
+        "footprint",
+        "links",
+        "drift"
+      ],
+      "title": "Stitching",
+      "type": "object"
+    },
+    "SurfaceRef": {
+      "properties": {
+        "kind": {
+          "enum": [
+            "wall",
+            "ceiling",
+            "floor"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "id": {
+          "description": "a wall's id, or '<room id>_ceiling' / '<room id>_floor'",
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "title": "SurfaceRef",
       "type": "object"
     },
     "Wall": {
@@ -342,7 +925,7 @@
   },
   "properties": {
     "schema_version": {
-      "default": "0.1.0",
+      "default": "0.4.0",
       "title": "Schema Version",
       "type": "string"
     },
@@ -371,6 +954,17 @@
       },
       "title": "Rooms",
       "type": "array"
+    },
+    "stitching": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Stitching"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "diagnostics": {
       "$ref": "#/$defs/Diagnostics"

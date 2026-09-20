@@ -39,6 +39,8 @@ def _label_outside(ax, p0, p1, text, centroid, colour=INK, size=7.5):
 
 
 def draw_room(ax, room: RoomPlan, index: int) -> None:
+    if not room.polygon:
+        return
     poly = np.array(room.polygon)
     ax.fill(poly[:, 0], poly[:, 1], color=FILL, zorder=1)
     centroid = poly.mean(axis=0)
@@ -53,11 +55,12 @@ def draw_room(ax, room: RoomPlan, index: int) -> None:
     for o in room.openings:
         a, b = np.array(o.start), np.array(o.end)
         ax.plot([a[0], b[0]], [a[1], b[1]], "-", color=DOOR, lw=4.0, alpha=0.85, solid_capstyle="butt", zorder=4)
+    area = "area n/a" if room.floor_area.value is None else f"{room.floor_area.value:.1f} m$^2$"
     ch = "ceiling n/a" if room.ceiling_height.value is None else f"ceiling {room.ceiling_height.value:.2f} m"
     ax.text(
         centroid[0],
         centroid[1],
-        f"{room.id.replace('_', ' ')}\n{room.floor_area.value:.1f} m$^2$\n{ch}",
+        f"{room.id.replace('_', ' ')}\n{area}\n{ch}",
         ha="center",
         va="center",
         fontsize=9,

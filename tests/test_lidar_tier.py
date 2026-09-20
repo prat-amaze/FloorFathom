@@ -82,14 +82,17 @@ def test_l_shaped_room(tmp_path):
     assert np.allclose(_lengths(room), sorted([6, 2, 3, 2, 3, 4]), atol=0.06)
 
 
-def test_two_rooms_joined_by_a_doorway(tmp_path):
+def _two_rooms(tmp_path: Path) -> Path:
     # 4 x 4 room and 3 x 4 room; a 0.9 m doorway in the shared wall x = 4, centred at z = 2
     walls = rect(0, 0, 4, 4) + rect(4, 0, 7, 4, gaps={"w": (1.55, 2.45)})
     walls = [w for w in walls if not (w.a[0] == 4 and w.b[0] == 4 and abs(w.a[1] - w.b[1]) == 4)]
     walls += [Wall((4, 0), (4, 1.55)), Wall((4, 2.45), (4, 4))]
     path = loop(0, 0, 4, 4, n=10) + [(4.0, 2.0)] + loop(4, 0, 7, 4, n=10)
-    root = write_capture(tmp_path, Room(walls, path=path), yaws=YAWS, pitches=PITCHES)
-    est = _estimate(root)
+    return write_capture(tmp_path, Room(walls, path=path), yaws=YAWS, pitches=PITCHES)
+
+
+def test_two_rooms_joined_by_a_doorway(tmp_path):
+    est = _estimate(_two_rooms(tmp_path))
     assert len(est.rooms) == 2
     areas = sorted(r.area for r in est.rooms)
     assert areas[0] == pytest.approx(12.0, rel=0.05)
@@ -152,6 +155,18 @@ def test_pipeline_output_is_valid_deterministic_and_covers_truth(rect_capture, t
         truth = 4.0 if round(w.length.value) == 4 else 5.0
         assert w.length.lo <= truth <= w.length.hi
         assert w.length.hi - w.length.lo > 0.02, "an interval this narrow would be overconfident"
+
+
+def test_two_room_plan_states_adjacency_footprint_and_drift(tmp_path):
+    plan = run(_two_rooms(tmp_path / "cap"), tmp_path / "out", replicates=3, debug=False)
+    st = plan.stitching
+    assert st is not None and len(plan.rooms) == 2
+    assert st.footprint.value == pytest.approx(28.0, rel=0.05)
+    assert st.overlaps == []
+    assert any(ln.other is not None and ln.gap < 0.3 for ln in st.links), "the doorway should link the rooms"
+    assert "Drift is corrected by a pose graph" in st.drift and "Ablation" in st.drift and "m2" in st.drift
+    off = run(_two_rooms(tmp_path / "cap2"), tmp_path / "off", replicates=3, debug=False, correct_drift=False)
+    assert "not corrected" in off.stitching.drift and len(off.rooms) == 2
 
 
 def test_plan_polygon_is_counter_clockwise_and_not_mirrored(rect_capture, tmp_path):

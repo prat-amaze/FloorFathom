@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = "0.4.0"
 
 Point = tuple[float, float]
 
@@ -50,25 +50,149 @@ class Opening(BaseModel):
     note: str | None = None
 
 
+class Station(BaseModel):
+    """Where the camera stood in the room's frame (a photo, or a place along a video walk)."""
+
+    position: Point
+    height_above_floor: float | None = Field(default=None, description="metres")
+
+
+class SurfaceRef(BaseModel):
+    kind: Literal["wall", "ceiling", "floor"]
+    id: str = Field(description="a wall's id, or '<room id>_ceiling' / '<room id>_floor'")
+
+
+DamageClass = Literal[
+    "water_stain",
+    "mould",
+    "structural_crack",
+    "peeling_paint",
+    "soot_or_fire",
+    "efflorescence",
+    "hole_or_impact",
+    "sagging_or_bulging",
+    "other_anomaly",
+]
+
+
+class DamageRegion(BaseModel):
+    """A patch of one surface that looks or measures unlike the rest of it.
+
+    Surface coordinates are metres: on a wall ``(s, h)`` is the distance along the wall from its start and the
+    height above the floor; on the ceiling and the floor they are the plan coordinates. The classes are our own
+    taxonomy; ``other_anomaly`` keeps a region that fits none of them.
+    """
+
+    id: str
+    surface: SurfaceRef
+    damage_class: DamageClass
+    class_confidence: float = Field(description="0 to 1; how well the region fits its class rule, not a probability")
+    polygon: list[Point] = Field(description="outline in surface coordinates")
+    centre: Point
+    width: Measurement = Field(description="extent along s (x on ceiling and floor)")
+    height: Measurement = Field(description="extent along h (y on ceiling and floor)")
+    length: Measurement = Field(description="longest side of the region's oriented box")
+    area: Measurement
+    evidence: str = Field(description="the measured features that decided the class")
+
+
+class ConcealedFlag(BaseModel):
+    """Damage that may continue out of sight, with the rule that says so."""
+
+    id: str
+    rule: str
+    surface: SurfaceRef
+    damage_ids: list[str]
+    reason: str
+
+
+class ScopeItem(BaseModel):
+    """One line of repair work, keyed to a surface."""
+
+    id: str
+    surface: SurfaceRef
+    damage_ids: list[str]
+    action: str
+    quantity: Measurement = Field(description="m2 of surface, or m of crack")
+
+
 class RoomPlan(BaseModel):
     id: str
+    name: str | None = Field(default=None, description="the room's name in the capture (folder or clip name), if known")
+    frame: Literal["capture", "room"] = Field(
+        default="capture",
+        description="capture: coordinates are in the frame shared by the whole capture; "
+        "room: the room's own local frame, not yet placed relative to the other rooms",
+    )
     polygon: list[Point] = Field(description="counter-clockwise corner points, plan coordinates")
     walls: list[Wall]
     ceiling_height: Measurement
     floor_area: Measurement
     openings: list[Opening]
+    stations: list[Station] = Field(default_factory=list)
+    damage: list[DamageRegion] = Field(default_factory=list)
+    concealed_flags: list[ConcealedFlag] = Field(default_factory=list)
+    scope: list[ScopeItem] = Field(default_factory=list)
     flags: list[str] = Field(default_factory=list)
 
 
 class Diagnostics(BaseModel):
-    frames_used: int
-    points: int
-    floor_height_world: float | None
-    floor_sharpness: float | None = Field(description="fraction of all points inside the floor spike")
+    frames_used: int | None = Field(default=None, description="depth frames (lidar) or keyframes (video); not used for photos")
+    points: int | None = None
+    floor_height_world: float | None = None
+    floor_sharpness: float | None = Field(default=None, description="fraction of all points inside the floor spike")
     bootstrap_replicates: int
     seed: int
     seconds: float
     conventions: str
+    models: list[str] = Field(default_factory=list, description="pretrained models used, as id@revision")
+    scale_method: str | None = Field(
+        default=None, description="how metric scale was obtained, e.g. lidar_metric, reference_object, monocular_depth"
+    )
+    scale_factor: float | None = Field(default=None, description="metres per unit of the reconstruction, when there is one")
+    scale_rel_sigma: float | None = Field(default=None, description="standard error of the scale as a fraction of it")
+    notes: list[str] = Field(default_factory=list)
+
+
+class Link(BaseModel):
+    """Which room a doorway opens onto."""
+
+    room: str
+    opening: str
+    other: str | None = Field(description="the room behind the doorway; null if none is within 1.5 m (outside, or not captured)")
+    gap: float | None = Field(description="metres from the doorway to the other room's outline; a wall thickness is a real link")
+    mutual: bool = Field(description="the other room has a doorway of its own next to this one")
+
+
+class Placement(BaseModel):
+    """How a room in its own frame was moved into the shared frame, by gluing doorways."""
+
+    room: str
+    angle: float = Field(description="radians counter-clockwise, about the room's own origin, applied before the shift")
+    shift: Point
+    host: str | None = Field(description="the placed room this one hangs off; null for the root")
+    host_opening: str | None
+    opening: str | None = Field(description="this room's doorway that meets the host's")
+    overlap: float = Field(description="m2 shared with the rooms already placed")
+    width_diff: float | None = Field(description="metres between the two sides of the doorway")
+    margin: float | None = Field(description="runner-up cost minus this cost; small means the placement is ambiguous")
+
+
+class Overlap(BaseModel):
+    a: str
+    b: str
+    area: float = Field(description="m2 of floor both rooms claim")
+
+
+class Stitching(BaseModel):
+    """The rooms as one property: adjacency, placement, overlaps and footprint."""
+
+    footprint: Measurement = Field(description="m2 of floor covered by all placed rooms, overlaps counted once")
+    links: list[Link]
+    placements: list[Placement] = Field(default_factory=list, description="empty when the rooms were already in one frame")
+    overlaps: list[Overlap] = Field(default_factory=list)
+    unplaced: list[str] = Field(default_factory=list, description="rooms with no doorway that fits anywhere")
+    drift: str = Field(description="what was done about pose drift, and what it was not")
 
 
 class CapturePlan(BaseModel):
@@ -77,6 +201,7 @@ class CapturePlan(BaseModel):
     tier: Literal["lidar", "video", "photo"]
     units: Literal["m"] = "m"
     rooms: list[RoomPlan]
+    stitching: Stitching | None = None
     diagnostics: Diagnostics
 
 
