@@ -152,3 +152,28 @@ def test_too_little_valid_surface_gives_nothing():
     img, valid, _ = _wall()
     valid[:] = False
     assert detect(Patch(img, valid, MPP)) == []
+
+
+def test_objects_are_not_damage_but_a_large_stain_is():
+    img, valid, _ = _wall()
+    door = np.zeros((H, W), np.uint8)
+    door[60:400, 360:460] = 1  # a door leaf: dark, sharp, axis-aligned, half a square metre
+    _blend(img, door.astype(bool), (0.45, 0.32, 0.20), alpha=1.0, soft=0.001)
+    small = np.zeros((H, W), np.uint8)
+    small[150:190, 200:270] = 1  # a light switch plate or a laptop: small, sharp, rectangular
+    _blend(img, small.astype(bool), (0.95, 0.95, 0.95), alpha=1.0, soft=0.001)
+    assert detect(Patch(img, valid, MPP)) == []
+    img, valid, _ = _wall()
+    _blend(img, _ellipse(1.6, 1.0, 0.45, 0.4), (0.72, 0.60, 0.40), alpha=0.55, soft=0.03)  # about 0.55 m2
+    assert [f.damage_class for f in detect(Patch(img, valid, MPP))] == ["water_stain"]
+
+
+def test_faint_ridges_are_texture_and_unclassified_regions_can_be_switched_off():
+    img, valid, rng = _wall()
+    m = np.zeros((H, W), np.uint8)
+    cv2.line(m, (100, 100), (160, 130), 1, 1)
+    _blend(img, m.astype(bool), (0.80, 0.78, 0.73), alpha=0.5)  # a barely darker scratch: lightness ~2 below
+    assert detect(Patch(img, valid, MPP)) == []
+    _blend(img, _ellipse(0.35, 1.0, 0.08, 0.06), (0.15, 0.30, 0.85), alpha=1.0, soft=0.002)
+    assert [f.damage_class for f in detect(Patch(img, valid, MPP))] == ["other_anomaly"]
+    assert detect(Patch(img, valid, MPP), report_unclassified=False) == []
