@@ -135,3 +135,44 @@ def test_the_pipeline_entry_writes_a_picture_per_judged_surface(clip, tmp_path):
     kf, sfm, depths = clip
     D.assess_video(room(), FLOOR_Y, kf, sfm, GRAVITY, SCALE, 0.02, depth=lambda rgb: depths[rgb.tobytes()], debug_dir=tmp_path / "damage")
     assert list((tmp_path / "damage").glob("*.png"))
+
+
+def test_cached_depth_runs_the_model_once_per_frame_and_reads_the_same_numbers_cold_and_warm(tmp_path):
+    calls = []
+
+    def model(rgb):
+        calls.append(1)
+        return rgb[..., 0].astype(np.float32) * 0.01 + 1.234567
+
+    cached = D.cached_depth(model, tmp_path / "depth")
+    img = (np.arange(4 * 6 * 3) % 251).astype(np.uint8).reshape(4, 6, 3)
+    cold, warm = cached(img), cached(img)
+    assert len(calls) == 1 and np.array_equal(cold, warm)  # the cold run reads back the stored float16, like every later one
+    assert np.allclose(cold, model(img), atol=0.01)
+    assert not list((tmp_path / "depth").glob("*.part.npy"))
+    cached(img + 1)
+    assert len(calls) == 3  # (one of those is the model() call above) and a different frame is a different file
+
+
+def test_only_the_allowed_frames_are_chosen_and_no_frame_means_none(clip):
+    v = views_of(clip)
+    allowed = frozenset({2, 3, 4, 9})
+    v.candidates = allowed
+    chosen = v.choose(wall_plane())
+    assert chosen and set(chosen) <= allowed
+    v.candidates = frozenset()
+    assert v.choose(wall_plane()) == []
+
+
+def test_the_depth_model_only_sees_the_allowed_frames(clip):
+    kf, sfm, depths = clip
+    seen = []
+
+    def spy(rgb):
+        seen.append(rgb.tobytes())
+        return depths[rgb.tobytes()]
+
+    r = room()
+    D.assess_video(r, FLOOR_Y, kf, sfm, GRAVITY, SCALE, 0.02, depth=spy, frames=[4, 5, 6, 7])
+    allowed = {D.Views(kf, sfm, D.world_poses(sfm, GRAVITY, SCALE), SCALE)._rgb(i).tobytes() for i in (4, 5, 6, 7)}
+    assert seen and set(seen) <= allowed
