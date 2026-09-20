@@ -1,5 +1,140 @@
 {
   "$defs": {
+    "ConcealedFlag": {
+      "description": "Damage that may continue out of sight, with the rule that says so.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "rule": {
+          "title": "Rule",
+          "type": "string"
+        },
+        "surface": {
+          "$ref": "#/$defs/SurfaceRef"
+        },
+        "damage_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Damage Ids",
+          "type": "array"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "rule",
+        "surface",
+        "damage_ids",
+        "reason"
+      ],
+      "title": "ConcealedFlag",
+      "type": "object"
+    },
+    "DamageRegion": {
+      "description": "A patch of one surface that looks or measures unlike the rest of it.\n\nSurface coordinates are metres: on a wall ``(s, h)`` is the distance along the wall from its start and the\nheight above the floor; on the ceiling and the floor they are the plan coordinates. The classes are our own\ntaxonomy; ``other_anomaly`` keeps a region that fits none of them.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "surface": {
+          "$ref": "#/$defs/SurfaceRef"
+        },
+        "damage_class": {
+          "enum": [
+            "water_stain",
+            "mould",
+            "structural_crack",
+            "peeling_paint",
+            "soot_or_fire",
+            "efflorescence",
+            "hole_or_impact",
+            "sagging_or_bulging",
+            "other_anomaly"
+          ],
+          "title": "Damage Class",
+          "type": "string"
+        },
+        "class_confidence": {
+          "description": "0 to 1; how well the region fits its class rule, not a probability",
+          "title": "Class Confidence",
+          "type": "number"
+        },
+        "polygon": {
+          "description": "outline in surface coordinates",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "title": "Polygon",
+          "type": "array"
+        },
+        "centre": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Centre",
+          "type": "array"
+        },
+        "width": {
+          "$ref": "#/$defs/Measurement",
+          "description": "extent along s (x on ceiling and floor)"
+        },
+        "height": {
+          "$ref": "#/$defs/Measurement",
+          "description": "extent along h (y on ceiling and floor)"
+        },
+        "length": {
+          "$ref": "#/$defs/Measurement",
+          "description": "longest side of the region's oriented box"
+        },
+        "area": {
+          "$ref": "#/$defs/Measurement"
+        },
+        "evidence": {
+          "description": "the measured features that decided the class",
+          "title": "Evidence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "surface",
+        "damage_class",
+        "class_confidence",
+        "polygon",
+        "centre",
+        "width",
+        "height",
+        "length",
+        "area",
+        "evidence"
+      ],
+      "title": "DamageRegion",
+      "type": "object"
+    },
     "Diagnostics": {
       "properties": {
         "frames_used": {
@@ -542,6 +677,27 @@
           "title": "Stations",
           "type": "array"
         },
+        "damage": {
+          "items": {
+            "$ref": "#/$defs/DamageRegion"
+          },
+          "title": "Damage",
+          "type": "array"
+        },
+        "concealed_flags": {
+          "items": {
+            "$ref": "#/$defs/ConcealedFlag"
+          },
+          "title": "Concealed Flags",
+          "type": "array"
+        },
+        "scope": {
+          "items": {
+            "$ref": "#/$defs/ScopeItem"
+          },
+          "title": "Scope",
+          "type": "array"
+        },
         "flags": {
           "items": {
             "type": "string"
@@ -559,6 +715,42 @@
         "openings"
       ],
       "title": "RoomPlan",
+      "type": "object"
+    },
+    "ScopeItem": {
+      "description": "One line of repair work, keyed to a surface.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "surface": {
+          "$ref": "#/$defs/SurfaceRef"
+        },
+        "damage_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Damage Ids",
+          "type": "array"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Measurement",
+          "description": "m2 of surface, or m of crack"
+        }
+      },
+      "required": [
+        "id",
+        "surface",
+        "damage_ids",
+        "action",
+        "quantity"
+      ],
+      "title": "ScopeItem",
       "type": "object"
     },
     "Station": {
@@ -649,6 +841,30 @@
       "title": "Stitching",
       "type": "object"
     },
+    "SurfaceRef": {
+      "properties": {
+        "kind": {
+          "enum": [
+            "wall",
+            "ceiling",
+            "floor"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "id": {
+          "description": "a wall's id, or '<room id>_ceiling' / '<room id>_floor'",
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "title": "SurfaceRef",
+      "type": "object"
+    },
     "Wall": {
       "properties": {
         "id": {
@@ -709,7 +925,7 @@
   },
   "properties": {
     "schema_version": {
-      "default": "0.3.0",
+      "default": "0.4.0",
       "title": "Schema Version",
       "type": "string"
     },
