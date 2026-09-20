@@ -3,11 +3,12 @@
 Pipeline (all in a 5 cm top-down grid):
   1. wall evidence: walls are occupied over most of the height range, furniture is not,
   2. free space: observed floor plus everything the phone walked through, minus walls,
-  3. rooms: cut door-sized necks with a morphological opening, keep the pieces the
-     camera actually spent time in,
-  4. outline: simplify each room's outer contour to a polygon,
-  5. snap: refit every polygon edge to the wall points next to it; edges with no wall
-     evidence are openings (or unobserved wall) and are kept as straight chords.
+  3. doorways: wall segments are extended along their own direction across gaps up to
+     doorway width until they meet another wall, which closes the room,
+  4. rooms: connected free space that the camera actually visited,
+  5. outline: simplify each room's outer contour to a polygon,
+  6. snap: refit every polygon edge to the wall points next to it; edges with no wall
+     evidence are kept as straight chords, and gaps inside a wall are doorway candidates.
 
 Right angles are never assumed.
 """
@@ -52,16 +53,13 @@ class Grid:
         return np.stack([self.x0 + (col + 0.5) * self.cell, self.z0 + (row + 0.5) * self.cell], axis=-1)
 
 
-def _count_grid(grid: Grid, ix, iz, weights=None) -> np.ndarray:
+def _count_grid(grid: Grid, ix, iz) -> np.ndarray:
     ok = grid.inside(ix, iz)
     flat = iz[ok] * grid.nx + ix[ok]
-    w = None if weights is None else weights[ok]
-    return np.bincount(flat, weights=w, minlength=grid.nx * grid.nz).reshape(grid.nz, grid.nx)
+    return np.bincount(flat, minlength=grid.nx * grid.nz).reshape(grid.nz, grid.nx)
 
 
-def wall_coverage(
-    points: np.ndarray, floor_y: float, grid: Grid, weights: np.ndarray | None = None, min_pts: int = 3
-) -> np.ndarray:
+def wall_coverage(points: np.ndarray, floor_y: float, grid: Grid, min_pts: int = 3) -> np.ndarray:
     """Number of 15 cm height bands (0.25-2.05 m above the floor) occupied in each cell."""
     h = points[:, 1] - floor_y
     nb = int(round((BAND_HI - BAND_LO) / BAND_H))
@@ -70,8 +68,7 @@ def wall_coverage(
     ix, iz = grid.index(points[ok][:, [0, 2]])
     ok2 = grid.inside(ix, iz)
     flat = (b[ok][ok2] * grid.nz + iz[ok2]) * grid.nx + ix[ok2]
-    w = None if weights is None else weights[ok][ok2]
-    counts = np.bincount(flat, weights=w, minlength=nb * grid.nz * grid.nx).reshape(nb, grid.nz, grid.nx)
+    counts = np.bincount(flat, minlength=nb * grid.nz * grid.nx).reshape(nb, grid.nz, grid.nx)
     return (counts >= min_pts).sum(axis=0).astype(np.int16)
 
 
@@ -108,7 +105,6 @@ def free_space(
     traj_xz: np.ndarray,
     cov: np.ndarray,
     cov_thresh: int,
-    weights: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Returns (free, barrier) boolean masks on the grid."""
     barrier = cov >= cov_thresh
@@ -118,8 +114,8 @@ def free_space(
     ix, iz = grid.index(points[:, [0, 2]])
     on_floor = np.abs(h) <= 0.04
     anyp = (h > 0.04) & (h < BAND_HI)
-    floor_ct = _count_grid(grid, ix[on_floor], iz[on_floor], None if weights is None else weights[on_floor])
-    any_ct = _count_grid(grid, ix[anyp], iz[anyp], None if weights is None else weights[anyp])
+    floor_ct = _count_grid(grid, ix[on_floor], iz[on_floor])
+    any_ct = _count_grid(grid, ix[anyp], iz[anyp])
     seen = (floor_ct >= 2) | (any_ct >= 3)
 
     free = seen & ~barrier_d
@@ -191,10 +187,13 @@ def split_rooms(
     traj_xz: np.ndarray,
     grid: Grid,
     neck: float = 0.15,
-    min_traj_cells: int = 40,
+    min_traj_cells: int = 10,
     min_area: float = 2.0,
 ) -> list[tuple[np.ndarray, int]]:
-    """Cut necks narrower than 2*neck (doorways) and return the pieces the camera visited.
+    """Connected free space that the camera visited, one mask per room.
+
+    Necks narrower than 2*neck (0.3 m, gaps between furniture and cables) are cut so they
+    do not join separate spaces. Doorways are closed earlier, by ``close_gaps``.
 
     Returns [(mask, n_trajectory_cells)], most visited first.
     """
@@ -318,6 +317,60 @@ def snap_polygon(
     return edges
 
 
+def find_gaps(
+    edge: Edge,
+    wall_pts: np.ndarray,
+    min_gap: float = 0.55,
+    max_gap: float = 1.8,
+    bin_size: float = 0.01,
+    band: float = 0.08,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Empty stretches of wall evidence along a supported edge (candidate doorways).
+
+    Wall points within ``band`` of the edge's line are binned along the edge in 1 cm
+    bins and smoothed over 5 cm. A bin is empty when its density is below half the
+    wall's median density; every empty run between ``min_gap`` and ``max_gap`` long is
+    returned as (start, end) in metres.
+    """
+    if edge.line is None or len(wall_pts) == 0:
+        return []
+    d = edge.p1 - edge.p0
+    length = float(np.linalg.norm(d))
+    if length < min_gap:
+        return []
+    t = d / length
+    n, c = edge.line
+    on_line = np.abs(wall_pts @ n - c) <= band
+    along = (wall_pts[on_line] - edge.p0) @ t
+    nb = int(np.ceil(length / bin_size))
+    idx = np.floor(along / bin_size).astype(int)
+    idx = idx[(idx >= 0) & (idx < nb)]
+    counts = np.bincount(idx, minlength=nb).astype(float)
+    if counts.sum() == 0:
+        return []
+    # Depth noise smears wall points a centimetre or two past a door jamb, so "any point
+    # present" would shrink the gap. The unbiased jamb is where the local density falls
+    # to half of the wall's typical density.
+    smooth = np.convolve(counts, np.ones(5) / 5.0, mode="same")
+    typical = float(np.median(smooth[smooth > 0]))
+    empty = smooth < 0.5 * typical
+    gaps = []
+    i = 0
+    while i < nb:
+        if empty[i]:
+            j = i
+            while j < nb and empty[j]:
+                j += 1
+            width = (j - i) * bin_size
+            touches_both_ends = i == 0 and j == nb
+            if min_gap <= width <= max_gap and not touches_both_ends:
+                gaps.append((edge.p0 + t * i * bin_size, edge.p0 + t * j * bin_size))
+            i = j
+        else:
+            i += 1
+    return gaps
+
+
 def rebuild_polygon(edges: list[Edge]) -> np.ndarray:
     """Vertices from intersecting neighbouring snapped lines.
 
@@ -372,20 +425,30 @@ def merge_collinear(edges: list[Edge], angle_deg: float = 6.0, offset: float = 0
     return edges
 
 
-def drop_short(edges: list[Edge], min_len: float = 0.25) -> list[Edge]:
-    """Remove tiny supported edges (furniture bumps, pilasters) by extending their neighbours."""
+def drop_short(edges: list[Edge], min_len: float = 0.25, corner_cut: float = 0.6) -> list[Edge]:
+    """Remove tiny edges by extending their neighbours to meet.
+
+    Edges shorter than ``min_len`` always go (furniture bumps, pilasters). Edges up to
+    ``corner_cut`` long go only when both neighbouring walls meet within 0.45 m of both
+    ends of the edge: that is a bevelled corner, an artefact of thin wall coverage where
+    two walls meet, and dropping it moves the area by well under 0.1 m2.
+    """
     edges = list(edges)
     changed = True
     while changed and len(edges) > 3:
         changed = False
         for i in range(len(edges)):
             e = edges[i]
-            if e.length >= min_len:
+            if e.length >= corner_cut:
                 continue
             prev, nxt = edges[i - 1], edges[(i + 1) % len(edges)]
             x = None
             if prev.line is not None and nxt.line is not None:
                 x = intersect(prev.line, nxt.line)
+            if e.length >= min_len and (
+                x is None or np.linalg.norm(x - e.p0) > 0.45 or np.linalg.norm(x - e.p1) > 0.45
+            ):
+                continue
             if x is not None and np.linalg.norm(x - e.p0) <= 0.8:
                 prev.p1 = x
                 nxt.p0 = x
