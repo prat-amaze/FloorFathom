@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.3.0"
+SCHEMA_VERSION = "0.4.0"
 
 Point = tuple[float, float]
 
@@ -57,6 +57,65 @@ class Station(BaseModel):
     height_above_floor: float | None = Field(default=None, description="metres")
 
 
+class SurfaceRef(BaseModel):
+    kind: Literal["wall", "ceiling", "floor"]
+    id: str = Field(description="a wall's id, or '<room id>_ceiling' / '<room id>_floor'")
+
+
+DamageClass = Literal[
+    "water_stain",
+    "mould",
+    "structural_crack",
+    "peeling_paint",
+    "soot_or_fire",
+    "efflorescence",
+    "hole_or_impact",
+    "sagging_or_bulging",
+    "other_anomaly",
+]
+
+
+class DamageRegion(BaseModel):
+    """A patch of one surface that looks or measures unlike the rest of it.
+
+    Surface coordinates are metres: on a wall ``(s, h)`` is the distance along the wall from its start and the
+    height above the floor; on the ceiling and the floor they are the plan coordinates. The classes are our own
+    taxonomy; ``other_anomaly`` keeps a region that fits none of them.
+    """
+
+    id: str
+    surface: SurfaceRef
+    damage_class: DamageClass
+    class_confidence: float = Field(description="0 to 1; how well the region fits its class rule, not a probability")
+    polygon: list[Point] = Field(description="outline in surface coordinates")
+    centre: Point
+    width: Measurement = Field(description="extent along s (x on ceiling and floor)")
+    height: Measurement = Field(description="extent along h (y on ceiling and floor)")
+    length: Measurement = Field(description="longest side of the region's oriented box")
+    area: Measurement
+    evidence: str = Field(description="the measured features that decided the class")
+
+
+class ConcealedFlag(BaseModel):
+    """Damage that may continue out of sight, with the rule that says so."""
+
+    id: str
+    rule: str
+    surface: SurfaceRef
+    damage_ids: list[str]
+    reason: str
+
+
+class ScopeItem(BaseModel):
+    """One line of repair work, keyed to a surface."""
+
+    id: str
+    surface: SurfaceRef
+    damage_ids: list[str]
+    action: str
+    quantity: Measurement = Field(description="m2 of surface, or m of crack")
+
+
 class RoomPlan(BaseModel):
     id: str
     name: str | None = Field(default=None, description="the room's name in the capture (folder or clip name), if known")
@@ -71,6 +130,9 @@ class RoomPlan(BaseModel):
     floor_area: Measurement
     openings: list[Opening]
     stations: list[Station] = Field(default_factory=list)
+    damage: list[DamageRegion] = Field(default_factory=list)
+    concealed_flags: list[ConcealedFlag] = Field(default_factory=list)
+    scope: list[ScopeItem] = Field(default_factory=list)
     flags: list[str] = Field(default_factory=list)
 
 
