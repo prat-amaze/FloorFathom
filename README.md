@@ -196,7 +196,11 @@ What this shows and does not show:
 - Repeatability of `H1` against `H2` was not scored: `H2` was not run on the ruler clips.
 - Without a ruler in view the depth model gave scale errors of -1%, +7% and +67% on the earlier
   clips, so the fallback cannot meet the +-3% gate.
-- One clip is one room. Stitching video rooms is untested on real clips.
+- One clip is one room. A folder of clips gives one stitched plan (`stitch.py` glues the rooms by their
+  doorways; a clip with no room is listed in the notes, an unplaceable room stays in its own frame).
+  Tested on canned per-room plans only. On the real plans of `H1`, `B1` and `B2`, only `B2` was placed:
+  it was the only room with a detected doorway, so `H1` and `B1` had nothing to glue and were reported
+  unplaced. Doorway detection is what limits video stitching.
 
 ## Layout
 
