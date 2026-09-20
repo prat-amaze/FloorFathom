@@ -98,3 +98,36 @@ def test_an_opening_width_is_never_negative_and_intervals_are_ordered(anchored):
     for m in [room.floor_area, room.ceiling_height, *[w.length for w in room.walls]]:
         assert m.lo <= m.value <= m.hi and m.lo >= 0
     assert np.isfinite(room.floor_area.value)
+
+
+def test_run_photo_gives_every_room_folder_a_plan_with_unique_ids_and_keeps_a_room_it_could_not_build(tmp_path, monkeypatch):
+    from floorfathom import photo_pipeline as PP
+
+    rooms = {"a": (rect(0, 0, 5, 4), (2.2, CAMERA_HEIGHT, 1.7), [0, 60, 120, 180, 240, 300]),
+             "b": (rect(0, 0, 3.5, 3), (1.5, CAMERA_HEIGHT, 1.2), [0, 60, 120, 180, 240, 300]),
+             "thin": (rect(0, 0, 5, 4), STATION, [0])}
+    poses_of, fakes = {}, {}
+    for r, name in enumerate(rooms):
+        (tmp_path / "images" / name).mkdir(parents=True)
+        (tmp_path / "images" / name / "1.png").write_bytes(b"")  # only discovered; loading is stubbed
+
+    def fake_load(name, paths):
+        walls, pos, yaws = rooms[name]
+        photos, poses, depth, _ = room_photos(walls, HEIGHT, pos, yaws, [8.0] + [0.0] * (len(yaws) - 1), noise=0.005)
+        for im in photos.images:
+            im.rgb[0, 0, 1] = list(rooms).index(name)  # which room's fake depth model to ask
+        if name == "thin":
+            poses.rotations[0] = None
+        poses_of[id(photos.images)], fakes[list(rooms).index(name)] = poses, depth
+        return photos
+
+    monkeypatch.setattr(PP, "load_photo_set", fake_load)
+    monkeypatch.setattr(PP, "register_rotations", lambda images, seed=0: poses_of[id(images)])
+    plan = PP.run_photo(tmp_path, tmp_path / "out", depth=lambda rgb: fakes[int(rgb[0, 0, 1])](rgb),
+                        scale=1.0, scale_rel_sigma=0.02)
+    assert plan.tier == "photo" and sorted(r.name for r in plan.rooms) == ["a", "b", "thin"]
+    ids = [r.id for r in plan.rooms] + [w.id for r in plan.rooms for w in r.walls]
+    assert len(ids) == len(set(ids))
+    assert next(r for r in plan.rooms if r.name == "thin").polygon == []
+    assert sorted(p.name for p in (tmp_path / "out" / "rooms").iterdir()) == ["a.json", "b.json", "thin.json"]
+    assert (tmp_path / "out" / "plan.json").exists() and (tmp_path / "out" / "plan.png").exists()
