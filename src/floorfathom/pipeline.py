@@ -16,6 +16,8 @@ from .uncertainty import bootstrap, jackknife_scale
 
 
 def detect_tier(capture: Path) -> str:
+    if capture.is_file() and capture.suffix.lower() in (".mov", ".mp4"):
+        return "video"
     if (capture / "depth").is_dir() and (capture / "odometry.csv").is_file():
         return "lidar"
     if any(capture.glob("*.MOV")) or any(capture.glob("*.mp4")):
@@ -73,6 +75,10 @@ def run(capture: str | Path, out: str | Path, tier: str | None = None, **kw) -> 
     tier = tier or detect_tier(capture)
     if tier == "lidar":
         return run_lidar(capture, out, **kw)
+    if tier == "video":
+        from .video_pipeline import run_video
+
+        return run_video(capture, out, **kw)
     raise NotImplementedError(f"the {tier} tier is not implemented yet; only lidar is")
 
 
