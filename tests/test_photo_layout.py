@@ -1,11 +1,11 @@
 """Wall segments from the levelled photo cloud: the four walls of a synthetic room, and nothing from clutter."""
 
 import numpy as np
-from synth import rect
+from synth import Wall, rect
 from synth_photo import CAMERA_HEIGHT, room_photos
 
 from floorfathom import layout as L
-from floorfathom.photo_layout import outline_from_segments, wall_segments
+from floorfathom.photo_layout import find_openings, floor_and_ceiling, outline_from_segments, wall_segments
 from floorfathom.photo_scene import build_scene
 
 HEIGHT = 2.6
@@ -92,3 +92,25 @@ def test_walls_not_seen_leave_unsupported_edges_and_are_not_drawn_as_walls():
 def test_fewer_than_two_walls_give_no_outline():
     segs = wall_segments(_cloud())
     assert outline_from_segments(segs[:1], GRID) is None and outline_from_segments([], GRID) is None
+
+
+def test_floor_and_ceiling_heights_are_found_and_their_gap_is_the_room_height():
+    floor, ceiling = floor_and_ceiling(_cloud())
+    assert abs(floor.y + CAMERA_HEIGHT) < 0.06 and abs(ceiling.y - (HEIGHT - CAMERA_HEIGHT)) < 0.06
+    assert abs((ceiling.y - floor.y) - HEIGHT) < 0.1
+
+
+def test_a_doorway_that_something_is_seen_through_is_an_opening_of_the_right_width():
+    walls = rect(0, 0, 5, 4, gaps={"n": (1.5, 2.5)}) + [Wall((5, 6), (0, 6))]  # a corridor wall behind the 1 m gap
+    cloud = _cloud(walls=walls)
+    segs = wall_segments(cloud)
+    outline = outline_from_segments(segs, GRID)
+    ops = find_openings(segs, outline, cloud)
+    assert len(ops) == 1 and abs(ops[0].width - 1.0) < 0.2
+    assert 0 <= ops[0].edge_index < len(outline.edges) and outline.edges[ops[0].edge_index].supported
+
+
+def test_a_gap_nothing_is_seen_through_is_not_called_a_doorway():
+    cloud = _cloud(walls=rect(0, 0, 5, 4, gaps={"n": (1.5, 2.5)}))  # nothing behind the gap: unobserved, not known open
+    segs = wall_segments(cloud)
+    assert find_openings(segs, outline_from_segments(segs, GRID), cloud) == []
