@@ -7,15 +7,14 @@ the Cozmo AI case study (`Applied AI.pdf`).
 
 | Tier | State |
 |---|---|
-| LiDAR (depth + poses + intrinsics) | **Per-room plans working** (this document). |
+| LiDAR (depth + poses + intrinsics) | **Per-room plans, stitched plan, drift correction and damage working** (this document). |
 | Video | **Runs end to end, one room per clip; misses the wall and opening gates on real clips** (see "Video tier"). |
 | Photos | Not started. |
 
 Whole-property stitching (`stitch.py`) is built and tested on synthetic layouts: doorway
 adjacency, overlap check, footprint with an interval, and placement of rooms that arrive
 in their own frames (video, photo) by gluing their doorways. It has not been run on real
-video or photo rooms yet. Not done for the LiDAR tier: damage regions, concealed-damage
-flags, scope items.
+video or photo rooms yet. Damage regions, concealed-damage flags and scope items are described under "Damage".
 
 ## Run it
 
@@ -154,6 +153,28 @@ room (6 to 5) with the correction on, which is the failure to watch.
   hung room by the difference. Two doorways of equal width whose rooms fit either way are
   flagged `placement_ambiguous`. Rooms with no visible doorway (a closed door leaf, or a few
   photos) cannot be placed and are listed in `stitching.unplaced`.
+
+## Damage
+
+`assess.py` is the step every tier shares: per room it unrolls each wall, the floor and the ceiling into a flat colour
+patch (`surfaces.py`: posed RGB frames projected onto the surface, depth used to leave out furniture and to measure
+relief), finds damage (`damage.py`), and fills `room.damage` (class, surface, centre, width, height, length, area, all
+with intervals), `room.concealed_flags` (`concealed.py`: named rules, e.g. a stain under a ceiling stain, mould, a long
+crack) and `room.scope` (`scope.py`: one line per damage region keyed to its surface, plus an opening-up line where a
+flag fired). The LiDAR tier calls it from `run_lidar` (`lidar_frames.py` supplies sharp RGB frames with depth and undoes
+the drift correction); `debug/damage/<surface>.png` shows what was judged.
+
+- Classes (our own definition; the brief names none): water stain, mould, structural crack, peeling paint,
+  efflorescence, soot or fire, hole or impact, sagging or bulging, other. Proposals are class-agnostic (colour against the
+  surface's local median, thin dark ridges, depth relief), then classified by feature rules.
+- Checked on synthetic painted rooms (known place and size, each class, shadows, furniture, a door beside a stain, tilted
+  planes) and end to end on a synthetic LiDAR scan. Not checked on real LiDAR damage: none exists in `CozmoData/`.
+- On real patches from the video tier (`scripts/eval_damage_patches.py`) the staged leakage mark is found with the right
+  class (22 x 16 cm against a tape 21 x 25 cm), but doors, hardware, sockets, window bars and glare still give false
+  regions. On `CozmoData/single_room` (no known damage) an earlier detector reported 47 false regions; it was then fixed
+  for tilted relief, dark fixtures, glare and door edges and not re-measured.
+- A pretrained CLIP classifier over the same proposals was tried and dropped: on the real patches it failed 7 of the
+  acceptance checks against 5 for the rules.
 
 ## Video tier
 
