@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -20,6 +21,7 @@ class Params:
     min_opening: float = 0.55
     max_opening: float = 1.8
     ceiling_footprint: float = 0.15  # fraction of the room a ceiling candidate must cover
+    outline_eps: float = 0.12  # polygon simplification tolerance (m)
 
 
 @dataclass
@@ -100,7 +102,11 @@ def estimate(
     traj_xz: np.ndarray,
     params: Params | None = None,
     grid: L.Grid | None = None,
+    free_hint: np.ndarray | None = None,
+    walls: Callable[[np.ndarray], list[L.WallLine]] | None = None,
 ) -> Estimate:
+    """``free_hint``: optional boolean mask on ``grid`` of cells known to be open floor (video tier: camera rays).
+    ``walls``: optional function from the points to fitted wall lines; the free space is cut off behind them."""
     params = params or Params()
     floor = find_floor(points[:, 1])
     if floor is None:
@@ -109,7 +115,10 @@ def estimate(
     cov = L.wall_coverage(points, floor.y, grid)
     nb = int(round((L.BAND_HI - L.BAND_LO) / L.BAND_H))
     thresh = int(round(params.cov_fraction * nb))
-    free, barrier = L.free_space(points, floor.y, grid, traj_xz, cov, thresh)
+    free, barrier = L.free_space(points, floor.y, grid, traj_xz, cov, thresh, seen_extra=free_hint)
+    lines = walls(points) if walls is not None else []
+    if lines:
+        free = L.clip_to_walls(free, grid, lines, traj_xz)
     closed, closures = L.close_gaps(barrier, grid, max_gap=params.max_gap)
     closed_d = cv2.dilate(closed.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
     free = free & ~closed_d
@@ -133,7 +142,7 @@ def estimate(
         # doorway gaps are measured on raw points (not 5 cm cells) in the upper band, where
         # furniture is rare, so the jambs are not quantised to the grid
         upper_pts = band_xz[near & (band_h >= 0.9)]
-        outline = L.build_outline(mask, grid, room_wall_pts, visits)
+        outline = L.build_outline(mask, grid, room_wall_pts, visits, epsilon=params.outline_eps)
         if outline is None:
             continue
         area = abs(L.signed_area(outline.polygon))

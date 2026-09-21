@@ -13,6 +13,7 @@ gives a plan with no rooms and the reason, never an invented number.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import pickle
@@ -20,12 +21,14 @@ import time
 from pathlib import Path
 from typing import Callable
 
+import cv2
 import numpy as np
 
 from .anchor import REFERENCE_LENGTH_M, VIDEO_STRIP_COLOUR, estimate_anchor, track_strip
 from .damage_video import assess_video, cached_depth, renumber_damage
 from .estimate import Params, estimate, make_grid
 from .io_video import extract_keyframes
+from .planes import find_floor
 from .points_video import build_dense_cloud, to_cloud
 from .render import render_plan
 from .report import capture_plan
@@ -33,6 +36,9 @@ from .schema import CapturePlan, Diagnostics, Measurement, RoomPlan, Stitching
 from .sfm import MIN_REGISTERED, run_sfm
 from .stitch import stitch_plans
 from .uncertainty import bootstrap, jackknife_scale
+from .video_heights import refine_heights
+from .video_rays import build_rays, carve, seen_from_votes
+from .video_walls import wall_finder
 from .world import estimate_gravity, refine_gravity
 
 DEPTH_LONG_SIDE = 924  # the depth model's scale depends on its input size; never mix sizes
@@ -43,6 +49,9 @@ STRIP_LENGTH_REL = 0.004  # 1 mm on 30 cm plus the edges of the yellow part: how
 KEYFRAME_STEP_S = 0.2  # one keyframe per this many seconds; SfM time grows faster than the keyframe count (0.15 s: 25-35 min per clip, 0.3 s: 11 min but lost the H1 ceiling)
 TARGET_DENSE_FRAMES = 50
 N_CHUNKS = 10
+# depth-model walls bow by several centimetres over a wall, so a contour piece shorter than about a hand's width off the
+# straight is not a corner: the polygon is simplified at 25 cm instead of the LiDAR tier's 12 cm (H1 38 edges -> 13, B1 9 -> 4)
+VIDEO_PARAMS = Params(outline_eps=0.25)
 CONVENTIONS = "SfM (pycolmap) poses; depth-model depth fitted to SfM; world +y up from floor and ceiling planes"
 
 Depth = Callable[[np.ndarray], np.ndarray]
@@ -85,6 +94,27 @@ def _choose_scale(
     if bad:
         return depth_scale, depth_rel, "monocular_depth", ["reference_strip_rejected", *bad]
     return anchor.scale, float(np.hypot(anchor.rel_sigma, STRIP_LENGTH_REL)), "reference_object", []
+
+
+def _refine_room_heights(ref, points: np.ndarray, grid) -> dict[int, float]:
+    """Re-centre each room's floor and ceiling on where its points lie (``video_heights``); returns each room's ceiling
+    spread (m), which widens the ceiling interval: a depth-model ceiling is bowed by several centimetres."""
+    spreads: dict[int, float] = {}
+    ix, iz = grid.index(points[:, [0, 2]])
+    ok = grid.inside(ix, iz)
+    for k, room in enumerate(ref.rooms):
+        if room.floor is None:
+            continue
+        near = cv2.dilate(room.outline.mask.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+        sel = np.zeros(len(points), dtype=bool)
+        sel[ok] = near[iz[ok], ix[ok]]
+        h = refine_heights(points[sel][:, 1], room.floor.y, None if room.ceiling is None else room.ceiling.y)
+        if h.refined:
+            room.floor = dataclasses.replace(room.floor, y=h.floor_y)
+            if room.ceiling is not None:
+                room.ceiling = dataclasses.replace(room.ceiling, y=h.ceiling_y)
+                spreads[k] = h.ceiling_spread
+    return spreads
 
 
 def _no_plan(name: str, seconds: float, seed: int, notes: list[str], sfm=None, n_keyframes: int = 0) -> CapturePlan:
@@ -238,7 +268,7 @@ def run_clip(
     ``run_video`` keep several clips apart; ``write=False`` leaves ``plan.json`` and ``plan.png`` to the caller."""
     t0 = time.perf_counter()
     name = clip.stem
-    params = params or Params()
+    params = params or VIDEO_PARAMS
 
     work = work or out / "work"
     st = clip.stat()
@@ -285,9 +315,21 @@ def run_clip(
     cloud = to_cloud(dense, rotation, scale=scale)
     traj = (sfm.centers[sfm.registered] @ rotation.T * scale)[:, [0, 2]]
 
-    ref = estimate(cloud.points, traj, params, grid=make_grid(cloud.points, traj))
+    grid = make_grid(cloud.points, traj)
+    # what the LiDAR tier's estimator lacks on video: cells the camera saw through (rays, from the same depth maps) and
+    # wall lines fitted to all the points at once; see video_rays.py and video_walls.py
+    floor0 = find_floor(cloud.points[:, 1])
+    votes = None
+    if floor0 is not None:
+        rays = build_rays(kf, sfm, dense, dm) if depth is not None else _load_or_run(
+            work / "rays.pkl", dense_stamp, lambda: build_rays(kf, sfm, dense, dm)
+        )
+        votes = carve(rays, rotation, scale, grid, float(floor0.y))
+    walls = wall_finder(float(np.median((sfm.centers[sfm.registered] @ rotation.T * scale)[:, 1])), seed=seed)
+    ref = estimate(cloud.points, traj, params, grid=grid, free_hint=None if votes is None else seen_from_votes(votes), walls=walls)
+    ceiling_spread = _refine_room_heights(ref, cloud.points, grid)
     write_alignment(work / "alignment.json", rotation, scale, None if ref.floor is None else float(ref.floor.y), sfm.image_size)
-    samples = bootstrap(cloud, traj, ref, params, replicates=replicates, seed=seed)
+    samples = bootstrap(cloud, traj, ref, params, replicates=replicates, seed=seed, free_votes=votes, walls=walls)
     plan = capture_plan(
         name, "video", ref, samples, replicates, seed, len(dense.frame_ratio), len(cloud),
         time.perf_counter() - t0, None if ref.floor is None else ref.floor.sharpness, jackknife_scale(N_CHUNKS, 2),
@@ -301,6 +343,8 @@ def run_clip(
         for w in room.walls:
             _widen(w.length, rel)
         _widen(room.ceiling_height, rel)
+        if room.ceiling_height.value:
+            _widen(room.ceiling_height, 1.96 * ceiling_spread.get(int(room.id.split("_")[1]), 0.0) / room.ceiling_height.value)
         _widen(room.floor_area, 2 * rel)
         for o in room.openings:
             _widen(o.width, rel)

@@ -88,6 +88,9 @@ def bootstrap(
     replicates: int = 20,
     seed: int = 0,
     drop: int = 2,
+    free_votes: np.ndarray | None = None,
+    free_min: int = 3,
+    walls=None,
 ) -> list[RoomSamples]:
     """Samples of every reference quantity, in the order of ``ref.rooms``.
 
@@ -101,7 +104,9 @@ def bootstrap(
     out = [RoomSamples() for _ in ref.rooms]
     for _ in range(replicates):
         order = np.sort(rng.choice(cloud.n_chunks, size=cloud.n_chunks - drop, replace=False))
-        est = estimate(_resample_points(cloud, order, bounds), traj_xz, params, grid=ref.grid)
+        # per-chunk ray votes (video tier) leave the same chunks out as the points do
+        hint = None if free_votes is None else free_votes[order].sum(axis=0, dtype=np.int32) >= free_min
+        est = estimate(_resample_points(cloud, order, bounds), traj_xz, params, grid=ref.grid, free_hint=hint, walls=walls)
         for k, rr in enumerate(ref.rooms):
             best, best_iou = None, 0.5
             for cand in est.rooms:

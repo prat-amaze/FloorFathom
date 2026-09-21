@@ -105,8 +105,12 @@ def free_space(
     traj_xz: np.ndarray,
     cov: np.ndarray,
     cov_thresh: int,
+    seen_extra: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Returns (free, barrier) boolean masks on the grid."""
+    """Returns (free, barrier) boolean masks on the grid.
+
+    ``seen_extra`` (optional, same shape as the grid) marks cells known to be open by other evidence, such as
+    camera rays passing through them; it counts as observed floor. Walls are still subtracted from it."""
     barrier = cov >= cov_thresh
     barrier_d = cv2.dilate(barrier.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
 
@@ -117,6 +121,8 @@ def free_space(
     floor_ct = _count_grid(grid, ix[on_floor], iz[on_floor])
     any_ct = _count_grid(grid, ix[anyp], iz[anyp])
     seen = (floor_ct >= 2) | (any_ct >= 3)
+    if seen_extra is not None:
+        seen = seen | seen_extra
 
     free = seen & ~barrier_d
     tx, tz = grid.index(traj_xz)
@@ -129,6 +135,54 @@ def free_space(
     closed = cv2.morphologyEx(free.astype(np.uint8), cv2.MORPH_CLOSE, _ellipse(int(round(0.2 / grid.cell)))).astype(bool)
     free = closed & ~barrier_d
     return free, barrier
+
+
+@dataclass
+class WallLine:
+    """A fitted wall as a line in the plan: ``normal . p == offset``, seen along ``tangent`` = (-normal_z, normal_x)
+    from ``t0`` to ``t1`` (the two ends of the outermost runs of wall points, gaps such as doors included)."""
+
+    normal: np.ndarray
+    offset: float
+    t0: float
+    t1: float
+
+    @property
+    def tangent(self) -> np.ndarray:
+        return np.array([-self.normal[1], self.normal[0]])
+
+
+def clip_to_walls(
+    free: np.ndarray,
+    grid: Grid,
+    walls: list[WallLine],
+    traj_xz: np.ndarray,
+    reach: float = 0.3,
+    keep_clear: float = 0.15,
+    depth: float = 20.0,
+) -> np.ndarray:
+    """Cut from ``free`` everything behind a wall line, so the room ends at its walls.
+
+    A room lies on the camera's side of each of its walls. Points on the far side of a fitted line, along the line's
+    extent (plus ``reach``), cannot be part of the room: what depth or camera rays show there is another room, a
+    balcony seen through glass, or a reflection. A line the camera came within ``keep_clear`` of, or passed through,
+    is furniture or a misfit, not a wall, and cuts nothing. The far side is taken relative to the camera path.
+    """
+    out = free.copy()
+    centre = np.median(traj_xz, axis=0)
+    cut = np.zeros(free.shape, np.uint8)
+    for w in walls:
+        side = 1.0 if float(w.normal @ centre) - w.offset >= 0 else -1.0
+        if float(np.min(side * (traj_xz @ w.normal - w.offset))) < keep_clear:
+            continue
+        away = -side * w.normal
+        a = w.offset * w.normal + (w.t0 - reach) * w.tangent
+        b = w.offset * w.normal + (w.t1 + reach) * w.tangent
+        quad = np.array([a, b, b + away * depth, a + away * depth])
+        cut[:] = 0
+        cv2.fillPoly(cut, [np.floor((quad - [grid.x0, grid.z0]) / grid.cell).astype(np.int32)], 1)
+        out &= ~cut.astype(bool)
+    return out
 
 
 def close_gaps(barrier: np.ndarray, grid: Grid, max_gap: float = 1.1, min_seg: float = 0.5) -> tuple[np.ndarray, list]:
@@ -467,8 +521,9 @@ def build_outline(
     grid: Grid,
     wall_pts: np.ndarray,
     trajectory_cells: int = 0,
+    epsilon: float = 0.12,
 ) -> RoomOutline | None:
-    rough = outer_polygon(room_mask, grid)
+    rough = outer_polygon(room_mask, grid, epsilon)
     if rough is None:
         return None
     edges = snap_polygon(rough, wall_pts)

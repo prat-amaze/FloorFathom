@@ -45,7 +45,7 @@ def room_plan(idx: int, room: RoomEst, samples: RoomSamples, replicates: int, sc
             samples.wall_length.get(i, []),
             SYS_LENGTH,
             "m",
-            "distance between corners; walls fitted by total least squares to lidar wall points",
+            "distance between corners; walls fitted by total least squares to wall points",
             scale,
         )
         if not ok:
