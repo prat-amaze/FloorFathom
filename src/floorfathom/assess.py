@@ -21,6 +21,7 @@ from .surfaces import MPP, Accumulator, Frame, Plane, surface_planes
 
 Frames = Iterable[Frame] | Callable[[Plane], Iterable[Frame]]
 MIN_SEEN = 0.30  # a surface with less than this share seen face on is reported as poorly covered
+EXCLUDED_CLASSES: frozenset[str] = frozenset({"mould", "other_anomaly"})  # too false-positive-prone to report by default
 
 
 def _meas(v: tuple[float, float, float], unit: str, method: str) -> Measurement:
@@ -93,6 +94,7 @@ def assess_room(
     scale_rel_sigma: float | None = None,
     report_unclassified: bool = True,
     debug_dir: Path | None = None,
+    exclude_classes: Iterable[str] = EXCLUDED_CLASSES,
 ) -> list[str]:
     """Fill ``room.damage``, ``room.concealed_flags`` and ``room.scope``; returns notes on what could not be judged.
 
@@ -100,7 +102,8 @@ def assess_room(
     to the frames to use for it. ``kinds`` names the surface kinds to assess. ``scale_rel_sigma`` is the relative
     error of the frames' metric scale (a LiDAR walk: the default of a few percent). ``report_unclassified=False``
     drops regions that fit no damage class, for tiers without depth to tell furniture from the wall.
-    ``debug_dir`` gets one picture per surface (``write_debug``).
+    ``debug_dir`` gets one picture per surface (``write_debug``), drawn after ``exclude_classes`` is applied, so an
+    excluded class never appears there, in ``room.damage``, or (via it) on the rendered plan.
     """
     notes: list[str] = []
     planes = [(ref, pl) for ref, pl in surface_planes(room, floor_y, ceiling_y, mpp) if ref.kind in kinds]
@@ -114,7 +117,7 @@ def assess_room(
         seen = float(patch.valid.sum() / max(1, plane.inside.sum() if plane.inside is not None else patch.valid.size))
         if seen < MIN_SEEN:
             notes.append(f"{ref.id}: only {seen * 100:.0f}% of the surface was seen face on and unoccluded, damage elsewhere on it is unknown")
-        found = detect(patch, scale_rel_sigma, report_unclassified)
+        found = [f for f in detect(patch, scale_rel_sigma, report_unclassified) if f.damage_class not in exclude_classes]
         if debug_dir is not None:
             write_debug(patch, found, ref, Path(debug_dir) / f"{ref.id}.png")
         for f in found:
