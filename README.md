@@ -203,7 +203,7 @@ scored with `scripts/eval_video.py`):
 | walls within 3% of the tape | 0/4 | 0/4 | 0/4 |
 | ceiling | not observed | not observed | 2.74 m [2.60, 2.88] against 2.79 (-1.9%) |
 | openings within 2 cm | 0/1 (found 91 cm, tape 81) | 0/1 (missed) | 0/4 (all missed) |
-| run time | 35 min | 24 min | 35 min |
+| run time, cold (0.2 s keyframes) | 19 min (tests ran alongside) | 14.6 min | 13.6 min |
 
 What this shows and does not show:
 
@@ -211,9 +211,15 @@ What this shows and does not show:
   the `H1` ceiling, which the scale estimate never sees: 2.74 m against 2.79 m by tape. The depth
   model's scale would have given about 4.5 m, and the old `H2` clip (depth scale only) gave 4.68 m.
   One clip is one data point; `B2` and `B1` had no ceiling to check.
-- The wall and opening gates are not met. Walls come out as fragments (7 to 19 per room) and short
-  (`B2` 2.47 m of 3.61 m, `H1` 1.72 m of 5.26 m); the estimator was tuned on LiDAR clouds, and this
-  was not fixed.
+- The wall and opening gates are still not met, but the room estimator no longer breaks on the glossy floor. Three
+  video-only inputs were added to the shared estimator, each off by default so the LiDAR and photo tiers are unchanged:
+  camera-ray free space (`video_rays.py`), wall lines fitted to the whole cloud that cut off what lies behind a wall
+  (`video_walls.py`) and floor and ceiling re-centred on their point plateau (`video_heights.py`). On `H1`, from the same
+  cached SfM and depth (`scripts/eval_video_estimator.py`), the room went from 19.3 m2 in 38 edges to 22.0 m2 in 13 edges,
+  the balcony seen through glass is cut off, the ceiling error went from +11.9 cm to +6.5 cm (tape inside the interval),
+  and one wall reached -6%; the other three walls are still fragments and the openings are 0 of 4. On `B1` the same
+  change gave 5.66 m2 in 4 edges (tape 6.12). Depth-model walls bow and kink by several centimetres, which no polygon
+  step removes; the +-3% gate needs a better geometry, not a better outline.
 - Repeatability of `H1` against `H2` was not scored: `H2` was not run on the ruler clips.
 - Without a ruler in view the depth model gave scale errors of -1%, +7% and +67% on the earlier
   clips, so the fallback cannot meet the +-3% gate.
