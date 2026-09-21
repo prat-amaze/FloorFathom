@@ -109,8 +109,12 @@ fewer than 25% of one chunk's wall cells match.
 
 Ablation output is written to `plan.json` under `stitching.drift`: footprint area and room
 count with correction ON and OFF, max shift (m), max yaw (°), χ² before and after. On the
-Cozmo sample data, the correction was small (short walks, low odometry drift); the ablation
-is still required by the gate and is always computed.
+Cozmo sample scans the pose graph finds chunks up to 10 cm / 1.5° (`single_room`), 22 cm / 3.2°
+(`single_scan_floor_only`) and 16 cm / 3.7° (`single_scan_with_ceiling`) apart, and the footprint with the
+correction on changes by −30.9%, −1.9% and −0.7% relative to the uncorrected one (a room drops out in two scans). There is no
+tape truth, so this does not show the correction is more accurate; on two recordings of one flat it did not
+improve their agreement (benchmark report). It stays on because recorded poses must not be trusted on a
+long walk, and the ablation is always computed.
 
 **Video:** Per-clip SfM is internally consistent (no accumulated drift within a clip). The
 inter-clip stitcher (`stitch.py`) handles placement drift: doorway-gluing BFS gives an
@@ -177,13 +181,24 @@ the full benchmark is needed.
 
 ## 5. Fix Loop Story
 
-*[PLACEHOLDER — to be completed after the video and photo tier changes land and the final
-benchmark run establishes which gate is the true worst performer. Structure:*
+Full declaration, evidence and commands: `Deliverables/fix_loop/declaration.md`.
 
-*1. Gate name, failing number (measured vs tape)*
-*2. Root-cause hypothesis and supporting evidence*
-*3. Fix shipped (code diff, before/after reproduced run)*
-*4. After number and whether the gate passed]*
+1. **Gate and failing number.** Video-tier opening detection on `hall_kitchen` (H1.MOV): 1 of 6
+   tape-measured openings found (four doors, a balcony door and a kitchen window). Five openings were
+   missed altogether, which is why it was chosen over the wall gate.
+2. **Root cause and evidence.** The glossy tile floor mirrors the room below itself and `planes.find_floor`
+   locked onto that reflection (y = −4.01 m; the true floor is a clean spike of about 13 000 points at
+   y = −2.45 m). The doorway detector only counts through-wall rays between 0.1 and 0.8 m above the floor,
+   so with the floor 1.5 m too low that band lay in empty air below the real doors. The same wrong floor also
+   fed the wall-coverage band and the ceiling search.
+3. **Fix shipped.** `video_heights.floor_from_strongest_spike` takes the floor as the most-supported
+   histogram spike over the plausible height range, and `run_clip` drops points below it before the
+   estimator, ray carving and height refinement (commit `7055a33`; the fix is 3 files, +106/-2 lines).
+4. **Result.** Declared prediction: at least 5 of 6 found, floor near −2.45 m, at least one wall within
+   ±3%. Measured: 6 of 6 found, floor −2.48 m, `kitchen_side_wall` 608 cm → 527 cm against a tape 526 cm
+   (now within ±3%; walls 1 of 4). The ±2 cm opening-position gate is still not met (1 of 6 within 2 cm):
+   the interior doors sit on a sheared room outline because the capture path never swept the left wall.
+   The gate moved from "1 found" to "all found", not to a pass.
 
 ---
 
@@ -205,8 +220,13 @@ benchmark run establishes which gate is the true worst performer. Structure:*
 - No live capture (no Pro device). Tier run on Cozmo-provided sample data; accuracy
   against tape is unmeasured. Damage regions on sample data are all false positives
   (no real damage exists in the sample scans).
-- ~25% of walls pass the ±3% repeatability gate on sample data; root cause is the
-  single-scan geometry (no second capture of the same room for comparison).
+- Repeatability gate (1 cm or 0.5% per wall) not met. There is no repeat LiDAR capture (no iPhone Pro to
+  make one), so it was tested on one walk split into two frame subsets: 26% of the walls that lie on the
+  same line in both runs meet it. Wall lines repeat to a median 0.3 cm and corners to 1.5 cm; the failure
+  is where walls end next to doorways and unseen stretches (median 31 cm), not wall position (benchmark
+  report).
+- No head-to-head against a consumer app: without an iPhone Pro there is no LiDAR capture of a
+  tape-measured room to compare (benchmark report).
 
 **Video:**
 - Glossy tile floor (hall_kitchen): few floor-level depth points; the room polygon
