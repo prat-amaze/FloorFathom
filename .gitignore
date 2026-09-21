@@ -6,3 +6,5 @@ CozmoData/
 out/
 models/
 .pytest_cache/
+
+.worktrees/
