@@ -22,18 +22,47 @@ scanning app for the Photo or Video tiers.
 - Flash: off. Do not use Night mode / long exposure.
 - Turn on the room's lights and open the curtains before you start.
 
-## How to walk — Photos tier (2–8 stills per room)
+## How to walk — Photos tier (2-8 stills per room)
 
-Before the first room: take the yellow ruler used for video (yellow body 31.6 x 4 cm). Measure the yellow part end to end with a tape to 1 mm, write the value down, and give it to the command with `--reference-length-cm` (as the video section says).
+Before the first room: take the yellow ruler used for video (yellow body 31.6 x 4 cm). Measure
+the yellow part end to end with a tape to 1 mm, write the value down, and give it to the command
+with `--reference-length-cm` (as the video section says).
 
 For each room:
 
-1. Stick the ruler flat on a wall, upright, with its centre at about phone height (1.2-1.5 m), on a wood-coloured or dark surface such as a door or a wardrobe. Not on a mirror, window, glossy tile or glass door. Nothing else yellow next to it.
-2. Stand facing that wall squarely, 1.0-2.5 m from it, phone upright (portrait) and level: turn no more than 15 degrees to either side of straight at the wall, and tilt the phone up or down no more than 15 degrees. This spot is where you take all of the room's photos. Keep the whole ruler in the middle third of the picture, sharp, with clear space around it and no hand, shadow or glare on it. Take the room's first photo.
-3. From the same spot, take one photo facing each wall in turn, rotating in place (roughly 45 degrees between shots), so consecutive photos overlap. Leave the ruler in place until the last photo.
+1. Stick the ruler flat on a wall, upright, with its centre at about phone height (1.2-1.5 m),
+   on a wood-coloured or dark surface such as a door or a wardrobe. Not on a mirror, window,
+   glossy tile or glass door. Nothing else yellow next to it.
+2. Stand about 1.5-2.5 m from a wall, phone upright (portrait). Walk a short arc, about 1 m to
+   one side and back, taking a photo every 45-60 degrees of turn as you go — move your feet, not
+   only your wrist, so consecutive photos have a real difference in viewpoint, not just rotation.
+3. Continue the arc around the room, one photo per wall face, until every wall has been
+   photographed from at least one position. Keep the ruler in view in at least three of the
+   photos, from different positions, so its true size can be triangulated.
 4. Include the floor and ceiling line in frame where possible; do not crop tight on eye level only.
-5. If the room has an alcove, closet opening, or a second doorway not visible from your spot, walk to a second position and repeat step 3 for that area.
+5. If the room has an alcove, closet opening, or a second doorway not visible from your arc, walk
+   to a second position and repeat step 2-3 for that area.
 6. One photo folder per room, one ruler per folder. Do not mix rooms into one folder.
+
+**Take plenty of photos, with small steps — this is what decides the result.** The software rebuilds
+the room in 3D by finding the same things (a corner, a door frame, a picture) in photos taken from
+next to each other. For that to work, each photo has to show *most* of what the photo before it showed.
+So move a little between shots, not a lot: think of it as walking a slow half-circle and clicking often,
+like the frames of a video. Aim for **about 12-20 photos per room**, not the bare minimum of 8. More
+overlapping photos is always better than fewer wide-apart ones.
+
+Why it matters: when we tried it with only 8-9 photos spread far apart (the Hall and Hall2 rooms), the
+photos didn't overlap enough for the software to link them together. It could only join about half of
+them, so it never saw the whole room at once.
+
+**How to tell from the result whether the capture was good.** If you took enough overlapping photos, the
+report gives the room's wall lengths, ceiling height **and floor area**. If the photos were too far apart,
+the report says so (a note that it "used the fallback"), and it falls back to measuring the room as if from
+one standing spot — that still gives wall lengths and ceiling height, but **it will leave the floor area
+blank**, because from a single spot you can never see all the walls. A blank floor area there is the honest
+answer: it means "go back and take more, closer-spaced photos," not that the software failed. (In fallback
+the ceiling height can come out a little tall, but the true tape number still lands inside the ± range we
+report.)
 
 ## How to walk — Video tier
 
@@ -55,20 +84,30 @@ not its size, so every clip needs one ruler of known length that stays still in 
    ruler stays in the middle of the picture, fully in view. Do not keep the phone square to
    the wall, and do not turn on the spot: the ruler has to be seen from different places.
    Then go straight into step 6 without stopping.
-6. Walk the full perimeter of the room once, pointing at the wall/floor/ceiling junction,
-   moving slowly (a few seconds per wall). Point the phone at the ceiling corners at least
-   once: a ceiling that is never seen gives no ceiling height.
-7. Move your feet, not only your wrist: step sideways or forward while you pan. Turning
-   on the spot gives no depth.
-8. Never whip the phone quickly, for example through a doorway: blur breaks the
-   reconstruction. Do not stare at a blank wall or a close-up of a door for more than
-   2 seconds; keep furniture, door frames or corners in view.
+6. Walk the full perimeter of the room once, pointing at the line where the walls meet the
+   floor and ceiling, moving slowly (a few seconds per wall). Point the phone at the ceiling
+   corners at least once: if the ceiling is never in the picture, we can't measure its height.
+7. Move your feet, not just your wrist: step sideways or forward while you pan. Turning on
+   the spot (like a lighthouse) doesn't let the software judge distances — it needs to see
+   things from slightly different places, which only happens if you actually move.
+8. Never whip the phone quickly, for example through a doorway: fast motion makes the video
+   blurry, and blurry frames confuse the software. Don't linger on a blank wall or a close-up
+   of a door for more than 2 seconds either; always keep something with detail — furniture,
+   a door frame, a corner — in the picture.
 9. Keep your hands, boxes and other objects (except the ruler) out of the picture, and
    keep people and pets out of the room.
-10. Avoid holding the phone on mirrors, glass doors and bright windows: reflections and
-    see-through glass give wrong geometry. Glance past them, do not linger.
+10. Don't point the phone straight at mirrors, glass doors or bright windows: the software
+    mistakes reflections and see-through glass for real surfaces and measures them wrong.
+    Glance past them, don't linger.
 11. Stop recording once you're back near your starting point. Keep each room under
     about 60 seconds.
+
+**Why the video tier usually beats the photo tier:** a video is just a great many photos taken a
+tiny step apart, so they overlap almost completely and the software can link the whole room together
+and measure floor area. That is the same overlap the photo tier needs — video simply gives it to you
+automatically. If a clip is too short, too fast, or shot by turning on the spot, it runs into the same
+limits as sparse photos: parts of the room don't link up, and the floor area may come back blank. Slow,
+steady, feet-moving is what fills the room in.
 
 ## Ground truth and repeat takes (benchmark rooms)
 
@@ -126,7 +165,7 @@ pets moving through the frame, shiny wet floors, and fast turns.
 
 | Tier   | Device tested         | Notes                                                        |
 |--------|------------------------|---------------------------------------------------------------|
-| Photo  | iPhone 16 (non-Pro)    | 0.8x zoom, native Camera app. The metric scale comes from the yellow reference ruler in each room (accuracy on real photos not measured yet). Without it, a depth model gives the scale and read ceilings +6%, +46% and +63% too tall on three rooms, so intervals are wide and rooms are flagged |
+| Photo  | iPhone 16 (non-Pro)    | 0.8x zoom, native Camera app. Walking-arc protocol: photos taken from different positions around the room so the ruler appears in at least three frames, enabling multi-frame triangulation of the ruler's metric scale. Without a ruler the depth model gives the scale and read ceilings +6%, +46% and +63% too tall on three rooms, so intervals are wide and rooms are flagged |
 | Video  | iPhone 16 (non-Pro)    | 0.6x zoom, native Camera app. The clip records its own zoom and the pipeline reads it; other iPhone 15+ models are untested. The metric scale comes from the yellow reference ruler (31.6 cm body) (accuracy on real clips not measured yet). Without it, a depth model gives the scale and was off by -1%, +7% and +67% on three clips, so intervals are wide (at least 15%) and rooms are flagged |
 | LiDAR  | *(none available)*     | No Pro-class device on hand; tier run against Cozmo-provided sample data instead of a live capture |
 

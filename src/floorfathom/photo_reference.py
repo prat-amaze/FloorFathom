@@ -15,6 +15,7 @@ ruler seen off head-on; the protocol keeps the view within 15 degrees so that er
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -151,3 +152,25 @@ def ruler_scale(
         spread = float(np.std(np.log(f), ddof=1))
         rel = float(np.hypot(rel, spread / np.sqrt(len(views))))
     return RulerScale(factor, float(max(rel, FLOOR_REL_SIGMA)), len(views)), flags
+
+
+def ruler_scale_sfm(
+    photos: PhotoSet,
+    sfm: "SfmResult",
+    work: Path,
+    length: float = REFERENCE_LENGTH_M,
+) -> tuple["RulerScale | None", list[str]]:
+    """Metric scale from the ruler triangulated across registered stills (multi-frame, new pipeline)."""
+    from .anchor import estimate_anchor, track_strip
+    from .photo_scene import _photo_keyframes
+
+    kf = _photo_keyframes(photos, work)
+    obs = track_strip(kf, sfm, colour="yellow", until_s=None)
+    if len(obs) < 3:
+        return None, (["ruler_not_seen"] if not obs else ["ruler_too_few_views"])
+    anchor = estimate_anchor(sfm, obs, true_length_m=length)
+    if anchor is None:
+        return None, ["ruler_triangulation_failed"]
+    if anchor.scale is None:
+        return None, ["ruler_triangulation_failed"]
+    return RulerScale(factor=anchor.scale, rel_sigma=anchor.rel_sigma, n_photos=anchor.n_frames), anchor.flags

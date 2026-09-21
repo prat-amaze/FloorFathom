@@ -15,7 +15,9 @@ rotations only (every photo is taken from one spot), and gravity is unknown.
 
 from __future__ import annotations
 
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 import cv2
@@ -69,6 +71,25 @@ class RoomScene:
     rotation: np.ndarray  # root photo frame -> cloud frame
     flags: list[str] = field(default_factory=list)
     depths: list[np.ndarray] = field(default_factory=list)  # per fused image, its z-depth divided by its scale (cloud metres)
+    centers: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+
+
+def _photo_keyframes(photos: "PhotoSet", work: Path) -> "Keyframes":
+    from .io_video import Keyframes
+    frames_dir = work / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    names = []
+    for im in photos.images:
+        fname = im.name if Path(im.name).suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"} else im.name + ".jpg"
+        cv2.imwrite(str(frames_dir / fname), cv2.cvtColor(im.rgb, cv2.COLOR_RGB2BGR))
+        names.append(fname)
+    n = len(names)
+    return Keyframes(
+        directory=frames_dir, names=names, source_index=np.arange(n),
+        time_s=np.arange(n, dtype=float), sharpness=np.ones(n),
+        size=(photos.images[0].rgb.shape[1], photos.images[0].rgb.shape[0]),
+        fps=1.0, video=frames_dir / "unused.mov",
+    )
 
 
 def _edge_mask(depth: np.ndarray) -> np.ndarray:
@@ -331,3 +352,74 @@ def build_scene(
     return RoomScene(cloud, _fan(cloud.points, floor_y), [photos.images[i].name for i in used],
                      floor_y, tilt, support, scales, scale_spread, rot, flags,
                      [(zs[k] / scales[k]).astype(np.float32) for k in range(len(used))])
+
+
+def build_scene_sfm(
+    photos: "PhotoSet",
+    sfm: "SfmResult",
+    depth: "Callable[[np.ndarray], np.ndarray]",
+    seed: int = 0,
+    work: "Path | None" = None,
+) -> "RoomScene | None":
+    """Gravity-aligned, densified cloud from SfmResult. Replaces the rotation-only build_scene for the new pipeline."""
+    from .points_video import build_dense_cloud
+    from .world import estimate_gravity
+    from .sfm import SfmResult as SR  # noqa: F401
+
+    if sfm.registered.sum() < 2:
+        return None
+    gravity = estimate_gravity(sfm)
+    work = work or Path(tempfile.mkdtemp(prefix="photo_scene_"))
+    kf = _photo_keyframes(photos, work)
+    dense = build_dense_cloud(kf, sfm, depth)
+    if dense is None:
+        return None
+    R = gravity.rotation
+    # Index by position (photos.images[i] == kf[i] by construction of _photo_keyframes)
+    name_to_idx = {im.name: i for i, im in enumerate(photos.images)}
+    used = [im.name for i, im in enumerate(photos.images) if sfm.registered[i]]
+    sfm_centers = np.array([sfm.centers[name_to_idx[name]] for name in used])
+    centers_world = sfm_centers @ R.T
+    points = dense.points @ R.T
+    station = centers_world.mean(axis=0)
+    points -= np.array([station[0], 0.0, station[2]])
+    centers_world -= np.array([station[0], 0.0, station[2]])
+    parts, chunk_arr = [], []
+    for c in range(dense.n_chunks):
+        sel = points[dense.chunk == c]
+        if len(sel) == 0:
+            continue
+        thin = voxel_downsample(sel.astype(np.float32), 0.03)
+        parts.append(thin)
+        chunk_arr.append(np.full(len(thin), c, dtype=np.int16))
+    cloud = Cloud(
+        points=np.concatenate(parts) if parts else np.zeros((0, 3), np.float32),
+        chunk=np.concatenate(chunk_arr) if chunk_arr else np.zeros(0, np.int16),
+        n_chunks=dense.n_chunks,
+    )
+    floor_y = float(np.percentile(points[:, 1], 2))
+    flags = list(gravity.flags) + list(dense.flags)
+    # Store per-frame depth maps (for damage assessment)
+    frame_depths = []
+    for name in used:
+        i_photo = next(j for j, im in enumerate(photos.images) if im.name == name)
+        i_kf = name_to_idx[name]
+        d = np.asarray(depth(photos.images[i_photo].rgb), dtype=np.float32)
+        r = dense.frame_ratio.get(i_kf, dense.scale_from_depth_model)
+        frame_depths.append((d / r).astype(np.float32))
+    scales = np.array([dense.frame_ratio.get(name_to_idx[n], np.nan) for n in used])
+    scale_spread = float(np.nanstd(np.log(list(dense.frame_ratio.values())))) if dense.frame_ratio else 0.0
+    return RoomScene(
+        cloud=cloud,
+        traj_xz=centers_world[:, [0, 2]],
+        used=used,
+        floor_y=floor_y,
+        tilt_deg=gravity.tilt_from_camera_deg,
+        floor_support=gravity.layering,
+        scales=scales,
+        scale_spread=scale_spread,
+        rotation=R,
+        flags=flags,
+        depths=frame_depths,
+        centers=centers_world,
+    )

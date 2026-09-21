@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from floorfathom.video_heights import refine_heights
+from floorfathom.planes import find_floor
+from floorfathom.video_heights import floor_from_strongest_spike, refine_heights
 
 FLOOR, CEILING = 0.0, 2.79
 
@@ -57,6 +58,26 @@ def test_too_few_points_keep_the_first_guess_and_say_so():
     r = refine_heights(y, floor_y=0.05, ceiling_y=2.85)
     assert not r.refined
     assert (r.floor_y, r.ceiling_y) == (0.05, 2.85)
+
+
+def test_a_full_glossy_reflection_below_the_floor_fools_find_floor_but_not_the_spike_scan():
+    """A glossy tile floor mirrors the whole room below itself: a strong reflected-ceiling spike 2.79 m under the
+    true floor, and reflected walls filling the gap. find_floor locks onto that spike; the spike scan does not."""
+    rng = np.random.default_rng(4)
+    floor = _floor_points(rng, 6000)
+    ceiling = rng.normal(CEILING, 0.02, 4000)
+    walls = _walls(rng, 8000)
+    refl_ceiling = rng.normal(-CEILING, 0.02, 4000)  # the mirror image of the ceiling, below the floor
+    refl_walls = rng.uniform(-CEILING, -0.05, 8000)
+    y = np.concatenate([floor, ceiling, walls, refl_ceiling, refl_walls])
+    assert find_floor(y).y < -1.0  # the reflection tail drags the naive search window below the true floor
+    assert abs(floor_from_strongest_spike(y) - FLOOR) < 0.05  # the strongest spike is still the true floor
+
+
+def test_the_spike_scan_finds_the_floor_of_an_ordinary_room():
+    rng = np.random.default_rng(5)
+    y = np.concatenate([_floor_points(rng), _walls(rng), _bowed_ceiling(rng)])
+    assert abs(floor_from_strongest_spike(y) - FLOOR) < 0.05
 
 
 def test_no_ceiling_guess_gives_no_ceiling():

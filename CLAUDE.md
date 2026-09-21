@@ -83,15 +83,15 @@ where the output lands, known limits. Outputs go to `out/` (git-ignored); clear 
   what lies behind a wall (a balcony seen through glass), and floor and ceiling re-centred on their point plateau
   (`video_heights`). Polygon tolerance is 25 cm for video (`VIDEO_PARAMS`), 12 cm for LiDAR.
 - Code: `io_video`, `sfm`, `mono_depth`, `world`, `anchor` (ruler), `points_video`, `video_rays`, `video_walls`, `video_heights`,
-  `video_pipeline.run_video/run_clip`, `stitch`, `damage_video` (damage on the keyframes). Dev tool: `scripts/eval_video_estimator.py
+  `video_openings`, `video_pipeline.run_video/run_clip`, `stitch`, `damage_video` (damage on the keyframes). Dev tool: `scripts/eval_video_estimator.py
   out/h1 hall_kitchen` compares estimator variants on a finished run's caches in about 40 s, no SfM.
 - Time (this 7 GB CPU-only laptop, per clip of 13-35 s): SfM is most of it. Measured cold at 0.2 s spacing: H1 13.6 min, B1 14.6 min,
   B2 19.4 min (B2 while tests ran on the same machine). Earlier: 24-35 min at 0.15 s spacing, 11 min at 0.3 s (which lost the H1
   ceiling and moved its scale by 21%). All caches present: H1 98 s including the ray pass, bootstrap and damage; the H1 + B1 folder command 182 s (B1 stays in its own frame: no doorway fits).
   Keyframe spacing is `KEYFRAME_STEP_S` / `run_clip(keyframe_step_s=...)`.
 - Limits (Data/, tape in `ground_truth.json`; accuracy is the open part, the pipeline itself runs end to end): walls still miss the
-  +-3% gate (0 of 4 on H1: one wall -6%, the other three come out as fragments; the depth-model walls bow and kink by several cm),
-  openings 0 of 4 on H1 (widths 55-125 cm; a through-ray detector found the doors at 63-75 cm against 71-81 but is not merged),
+  +-3% gate (0 of 4 on H1: one wall -6%, the other three come out as fragments (now subject to global wall-line augmentation and re-merge; re-evaluation needed); the depth-model walls bow and kink by several cm),
+  openings 0 of 4 on H1 (widths 55-125 cm; a through-ray detector finds doors at 63-75 cm against 71-81; now integrated (re-evaluation needed)),
   ceiling on H1 285.5 cm against 279 (+6.5 cm, tape inside the interval; B1 and B2 show none). With ray free space the room
   polygon is right in kind: H1 22.0 m2 in 13 edges (was 19.3 m2 in 38, a glossy-floor cloud fragments), B1 5.66 m2 in 4 edges (tape 6.12).
   H1 vs H2 repeatability and `Full.MOV` not run. The result on H1 changes between runs (depth maps and keyframe spacing move it),

@@ -27,9 +27,9 @@ from .anchor import REFERENCE_LENGTH_M
 from .estimate import Estimate, RoomEst, make_grid
 from .io_photos import PhotoSet, discover_rooms, load_photo_set
 from .photo_layout import CEILING_RANGE, OPENING_WIDTH, find_openings, floor_and_ceiling, outline_from_segments, wall_segments
-from .photo_pose import Poses, register_rotations
-from .photo_reference import MIN_RULER_FRAC, find_ruler, ruler_scale
-from .photo_scene import MAX_DEPTH_M, MIN_DEPTH_M, RoomScene, _edge_mask, build_scene
+from .photo_pose import run_photo_sfm
+from .photo_reference import MIN_RULER_FRAC, find_ruler, ruler_scale_sfm
+from .photo_scene import MAX_DEPTH_M, MIN_DEPTH_M, RoomScene, _edge_mask, build_scene_sfm
 from .render import render_plan
 from .report import capture_plan
 from .schema import CapturePlan, Diagnostics, Measurement, RoomPlan, Station
@@ -45,7 +45,9 @@ MONO_SCALE_REL_SIGMA = 0.30  # assumed 1-sigma of the depth model's room scale w
 # four rooms cannot calibrate anything. They cover registration by rotation only, arm swing and depth bowing.
 SYS_LENGTH, SYS_HEIGHT, SYS_AREA, SYS_OPENING = (0.05, 0.10), (0.05, 0.09), (0.10, 0.19), (0.06, 0.10)
 MAX_UNSUPPORTED_FRAC = 0.25  # more of the perimeter unobserved than this and the area is not reported
-CONVENTIONS = "rotation-only registration of stills from one station; monocular metric depth; world +y up from wall thinness"
+MIN_SFM_FRAC = 0.6  # SfM must register at least this share of the stills; below it, a partial reconstruction
+# is worse than the rotation-only single-station cloud, so the pipeline falls back to rotation-only
+CONVENTIONS = "multi-view SfM registration with per-frame poses; monocular metric depth; world +y up from layering score"
 
 Depth = Callable[[np.ndarray], np.ndarray]
 
@@ -151,14 +153,11 @@ class PhotoRoom:
     scale_rel_sigma: float | None = None  # 1-sigma of the metric scale, as a fraction: widen sizes measured on the frames by it
 
 
-def photo_frames(photos: PhotoSet, poses: Poses, scene: RoomScene, factor: float, hires: PhotoSet | None = None) -> list:
+def photo_frames(photos: PhotoSet, sfm, scene: RoomScene, factor: float, hires=None, poses=None) -> list:
     """One ``surfaces.Frame`` per fused photo, in the room's frame at metric scale (``factor`` metres per cloud metre).
 
-    The camera is at the origin (the photos turn on the spot), its rotation is camera -> cloud, and the depth is the
-    photo's own depth after the scale harmonisation, times ``factor``, at the working size. Depth is trusted between
-    0.3 and 8 m and away from depth jumps; the reference ruler's pixels are not, so the ruler is never reported as
-    damage. ``hires``, the same photos loaded at a larger size, gives the frames' pictures and their intrinsics; the
-    depth stays at the working size and is indexed at its own size.
+    When ``sfm`` is not None, each frame's pose comes from SfM (camera centre + rotation). When ``sfm`` is None
+    (rotation-only fallback), ``poses.rotations[i]`` gives the camera-to-root rotation; the camera sits at the origin.
     """
     import cv2
 
@@ -168,6 +167,8 @@ def photo_frames(photos: PhotoSet, poses: Poses, scene: RoomScene, factor: float
     big = {im.name: im for im in hires.images} if hires is not None else {}
     frames = []
     for k, name in enumerate(scene.used):
+        if k >= len(scene.depths):
+            break
         i = index[name]
         im, z = photos.images[i], scene.depths[k]
         h, w = z.shape
@@ -178,8 +179,14 @@ def photo_frames(photos: PhotoSet, poses: Poses, scene: RoomScene, factor: float
             cv2.line(block, tuple(int(x) for x in ruler[0]), tuple(int(x) for x in ruler[1]), 1, thickness=int(0.05 * max(h, w)))
             ok &= block == 0
         pose = np.eye(4)
-        pose[:3, :3] = scene.rotation @ np.asarray(poses.rotations[i], float)
-        pic = big.get(name, im)  # the larger picture if there is one; its own focal length in its own pixels
+        if sfm is not None and not np.any(np.isnan(sfm.cam_to_world[i])):
+            c2w = sfm.cam_to_world[i]
+            pose[:3, :3] = scene.rotation @ c2w
+            if k < len(scene.centers) and not np.any(np.isnan(scene.centers[k])):
+                pose[:3, 3] = scene.centers[k]
+        elif poses is not None and poses.rotations[i] is not None:
+            pose[:3, :3] = scene.rotation @ np.asarray(poses.rotations[i], float)  # origin stays zero
+        pic = big.get(name, im)
         ph, pw = pic.rgb.shape[:2]
         frames.append(Frame(rgb=pic.rgb, K=np.array([[pic.f_px, 0, pw / 2], [0, pic.f_px, ph / 2], [0, 0, 1.0]]), pose=pose,
                             depth=(z * factor).astype(np.float32), depth_ok=ok))
@@ -194,7 +201,6 @@ def plan_photo_room(*args, **kwargs) -> CapturePlan:
 def build_photo_room(
     name: str,
     photos: PhotoSet,
-    poses: Poses,
     depth: Depth,
     seed: int = 0,
     scale: float | None = None,
@@ -202,25 +208,64 @@ def build_photo_room(
     models: list[str] | None = None,
     reference_length_m: float | None = None,
     hires: Callable[[], PhotoSet] | None = None,
+    work: Path | None = None,
 ) -> PhotoRoom:
-    """The plan of one room from its stills, with its frames. The scale comes from the reference ruler in the photos when it is
-    found (``reference_length_m`` overrides its length); ``scale`` (metres per depth-model metre) and its relative
-    sigma override that; with neither, the depth model's own metres are used and flagged."""
+    """The plan of one room from its stills, with its frames. SfM registers the stills and recovers per-photo poses.
+    The scale comes from the reference ruler when found; otherwise the depth model's own metres are used and flagged."""
+    import tempfile
+
     t0 = time.perf_counter()
     models = models or []
-    flags = list(dict.fromkeys(photos.flags + poses.flags))
-    scene: RoomScene | None = build_scene(photos, poses, depth, seed)
-    if scene is None:
-        return PhotoRoom(_null(name, time.perf_counter() - t0, seed, [*flags, "insufficient_views"], models))
-    flags += scene.flags
-    if scale is None:
-        ruler, ruler_flags = ruler_scale(photos, poses, scene, wall_segments(scene.cloud.points, seed),
-                                         reference_length_m or REFERENCE_LENGTH_M)
-        flags += ruler_flags
-        if ruler is None:
-            flags.append("reference_ruler_not_found")
+    flags = list(photos.flags)
+    work_dir = Path(work) if work else Path(tempfile.mkdtemp(prefix="photo_room_"))
+    sfm = run_photo_sfm(photos, work_dir / "sfm", seed)
+    poses = None  # set only in rotation-only fallback
+    # Use SfM only when it registered enough of the stills. A partial reconstruction (a few frames of a
+    # sparse, wide-baseline still capture) gives a fragmented, mis-scaled cloud that is worse than the
+    # rotation-only path's complete single-station cloud (measured on Hall/Hall2: SfM area 0.1 m² and a
+    # 10 m ceiling from 4/9 frames, vs a coherent room from all frames). Below the gate we fall back.
+    use_sfm = sfm is not None and sfm.registered_fraction >= MIN_SFM_FRAC
+    if use_sfm:
+        flags += sfm.flags
+        scene: RoomScene | None = build_scene_sfm(photos, sfm, depth, seed, work_dir)
+        if scene is None:
+            return PhotoRoom(_null(name, time.perf_counter() - t0, seed, [*flags, "insufficient_views"], models))
+        flags += scene.flags
+        if scale is None:
+            ruler, ruler_flags = ruler_scale_sfm(photos, sfm, work_dir / "ruler", reference_length_m or REFERENCE_LENGTH_M)
+            flags += ruler_flags
+            if ruler is None:
+                flags.append("reference_ruler_not_found")
+            else:
+                scale, scale_rel_sigma = ruler.factor, ruler.rel_sigma
+    else:
+        # SfM did not register enough frames (or failed): fall back to rotation-only registration, which
+        # builds a complete cloud from every still taken at one station.
+        from .photo_pose import Poses, register_rotations
+        from .photo_reference import ruler_scale as _ruler_scale_v1
+        from .photo_scene import build_scene as _build_scene_rotation
+        if sfm is not None:
+            flags.append(f"sfm_underregistered_{int(sfm.registered.sum())}_of_{len(photos.images)}_used_rotation_only")
         else:
-            scale, scale_rel_sigma = ruler.factor, ruler.rel_sigma
+            flags.append("sfm_fell_back_to_rotation_only")
+        poses = register_rotations(photos.images, seed=seed) if len(photos.images) >= 2 else Poses(
+            [None] * len(photos.images), None, {}, None, ["insufficient_registration"])
+        if "insufficient_registration" in poses.flags:
+            return PhotoRoom(_null(name, time.perf_counter() - t0, seed, [*flags, *poses.flags, "insufficient_registration"], models))
+        flags += poses.flags
+        scene = _build_scene_rotation(photos, poses, depth, seed)
+        if scene is None:
+            return PhotoRoom(_null(name, time.perf_counter() - t0, seed, [*flags, "insufficient_views"], models))
+        flags += scene.flags
+        if scale is None:
+            ruler, ruler_flags = _ruler_scale_v1(photos, poses, scene,
+                                                  wall_segments(scene.cloud.points, seed),
+                                                  reference_length_m or REFERENCE_LENGTH_M)
+            flags += ruler_flags
+            if ruler is None:
+                flags.append("reference_ruler_not_found")
+            else:
+                scale, scale_rel_sigma = ruler.factor, ruler.rel_sigma
     factor = 1.0 if scale is None else scale
     method, rel = ("monocular_depth", MONO_SCALE_REL_SIGMA) if scale is None else (
         "reference_object", 0.03 if scale_rel_sigma is None else scale_rel_sigma)
@@ -251,7 +296,7 @@ def build_photo_room(
     total = sum(e.length for e in ref.outline.edges)
     unseen = sum(e.length for e in ref.outline.edges if not e.supported)
     for w in room.walls:
-        if w.evidence == "closure":  # a straight chord across an unobserved stretch is not a measurement of a wall
+        if w.evidence == "closure":
             w.length = Measurement(value=None, lo=None, hi=None, unit="m", method=w.length.method,
                                    note="wall not observed: the outline is closed by a straight chord")
     if total > 0 and unseen / total > MAX_UNSUPPORTED_FRAC:
@@ -266,7 +311,7 @@ def build_photo_room(
     d.conventions, d.scale_method, d.scale_factor, d.scale_rel_sigma = CONVENTIONS, method, round(factor, 5), round(rel, 4)
     d.models, d.notes = models, list(room.flags)
     return PhotoRoom(
-        plan, photo_frames(photos, poses, scene, factor, None if hires is None else hires()),
+        plan, photo_frames(photos, sfm, scene, factor, None if hires is None else hires(), poses=poses),
         None if ref.floor is None else float(ref.floor.y), None if ref.ceiling is None else float(ref.ceiling.y), float(rel),
     )
 
@@ -301,11 +346,10 @@ def photo_rooms(
     built = []
     for k, (name, paths) in enumerate(rooms.items()):
         photos = load_photo_set(name, paths)
-        poses = register_rotations(photos.images, seed=seed) if len(photos.images) >= 2 else Poses(
-            [None] * len(photos.images), None, {}, None, ["insufficient_registration"])
-        room = build_photo_room(name, photos, poses, depth, seed, scale, scale_rel_sigma, models, reference_length_m,
-                                hires=lambda name=name, paths=paths: load_photo_set(name, paths, long_side=FRAME_LONG_SIDE))
-        _renumber(room.plan.rooms[0], k)  # ids unique across the capture: room_k, r{k}_w*, r{k}_o*
+        room = build_photo_room(name, photos, depth, seed, scale, scale_rel_sigma, models, reference_length_m,
+                                hires=lambda name=name, paths=paths: load_photo_set(name, paths, long_side=FRAME_LONG_SIDE),
+                                work=out / "work" / name)
+        _renumber(room.plan.rooms[0], k)
         built.append(room)
     return built
 

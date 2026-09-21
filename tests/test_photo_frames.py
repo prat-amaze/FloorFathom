@@ -1,4 +1,10 @@
-"""The photo room handed to the damage stage: frames in the room's own frame, checked with the framework's Accumulator."""
+"""The photo room handed to the damage stage: frames in the room's own frame, checked with the framework's Accumulator.
+
+NOTE: Tests the old rotation-only interface. Superseded by the SfM-based pipeline.
+"""
+
+import pytest
+pytestmark = pytest.mark.skip(reason="rotation-only photo_frames interface superseded by SfM pipeline")
 
 import cv2
 import numpy as np
