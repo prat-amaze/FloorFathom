@@ -27,6 +27,7 @@ import numpy as np
 from .anchor import REFERENCE_LENGTH_M, VIDEO_STRIP_COLOUR, estimate_anchor, track_strip
 from .damage_video import assess_video, cached_depth, renumber_damage
 from .estimate import Params, estimate, make_grid
+from .layout import merge_collinear, rebuild_polygon, signed_area
 from .io_video import extract_keyframes
 from .planes import find_floor
 from .points_video import build_dense_cloud, to_cloud
@@ -36,7 +37,8 @@ from .schema import CapturePlan, Diagnostics, Measurement, RoomPlan, Stitching
 from .sfm import MIN_REGISTERED, run_sfm
 from .stitch import stitch_plans
 from .uncertainty import bootstrap, jackknife_scale
-from .video_heights import refine_heights
+from .video_heights import REFLECTION_MARGIN, floor_from_strongest_spike, refine_heights
+from .video_openings import find_openings
 from .video_rays import build_rays, carve, seen_from_votes
 from .video_walls import wall_finder
 from .world import estimate_gravity, refine_gravity
@@ -203,6 +205,36 @@ def _move_debug(src: Path, dst: Path, k: int) -> None:
             pass
 
 
+_AUG_ANGLE_COS = np.cos(np.radians(12.0))
+_AUG_DIST_M = 0.20
+
+
+def _augment_unsupported_edges(edges, wall_lines) -> None:
+    """Assign a global wall line to each unsupported polygon edge that lies on one."""
+    for e in edges:
+        if e.line is not None:
+            continue
+        d = e.p1 - e.p0
+        L = float(np.linalg.norm(d))
+        if L < 0.1:
+            continue
+        t = d / L
+        n_edge = np.array([-t[1], t[0]])
+        mid = 0.5 * (e.p0 + e.p1)
+        best_wl, best_dist = None, _AUG_DIST_M
+        for wl in wall_lines:
+            if abs(float(np.dot(n_edge, wl.normal))) < _AUG_ANGLE_COS:
+                continue
+            dist = abs(float(np.dot(wl.normal, mid)) - wl.offset)
+            if dist < best_dist:
+                best_dist, best_wl = dist, wl
+        if best_wl is not None:
+            sign = 1.0 if float(np.dot(best_wl.normal, n_edge)) >= 0 else -1.0
+            e.line = (sign * best_wl.normal, sign * best_wl.offset)
+            e.supported = True
+            e.support = 1.0
+
+
 def run_video(capture: str | Path, out: str | Path, **kw) -> CapturePlan:
     """One stitched plan for a clip or for a folder of clips (each clip is one room), in one layout.
 
@@ -313,6 +345,13 @@ def run_clip(
     refined = refine_gravity(to_cloud(dense, rough.rotation, scale=scale).points)
     rotation = refined.rotation @ rough.rotation
     cloud = to_cloud(dense, rotation, scale=scale)
+    # a glossy floor mirrors the room below itself; find_floor would lock onto that reflection (H1: 1.5 m too low),
+    # so drop points below the true floor before the estimator, rays and heights ever see the cloud (video_heights)
+    floor_y0 = floor_from_strongest_spike(cloud.points[:, 1])
+    if floor_y0 is not None:
+        keep = cloud.points[:, 1] > floor_y0 - REFLECTION_MARGIN
+        if keep.any():
+            cloud = dataclasses.replace(cloud, points=cloud.points[keep], chunk=cloud.chunk[keep])
     traj = (sfm.centers[sfm.registered] @ rotation.T * scale)[:, [0, 2]]
 
     grid = make_grid(cloud.points, traj)
@@ -320,6 +359,7 @@ def run_clip(
     # wall lines fitted to all the points at once; see video_rays.py and video_walls.py
     floor0 = find_floor(cloud.points[:, 1])
     votes = None
+    rays = None
     if floor0 is not None:
         rays = build_rays(kf, sfm, dense, dm) if depth is not None else _load_or_run(
             work / "rays.pkl", dense_stamp, lambda: build_rays(kf, sfm, dense, dm)
@@ -327,6 +367,23 @@ def run_clip(
         votes = carve(rays, rotation, scale, grid, float(floor0.y))
     walls = wall_finder(float(np.median((sfm.centers[sfm.registered] @ rotation.T * scale)[:, 1])), seed=seed)
     ref = estimate(cloud.points, traj, params, grid=grid, free_hint=None if votes is None else seen_from_votes(votes), walls=walls)
+    if walls is not None and ref.floor is not None:
+        wall_lines = walls(cloud.points)
+        if wall_lines:
+            for room in ref.rooms:
+                _augment_unsupported_edges(room.outline.edges, wall_lines)
+                room.outline.edges = merge_collinear(room.outline.edges)
+                verts = rebuild_polygon(room.outline.edges)
+                for i, e in enumerate(room.outline.edges):
+                    e.p0 = verts[i]
+                    e.p1 = verts[(i + 1) % len(room.outline.edges)]
+                room.outline.polygon = verts
+                room.area = float(abs(signed_area(verts)))
+    if rays is not None and ref.floor is not None:
+        for room in ref.rooms:
+            room.openings = find_openings(
+                room.outline.edges, rays, rotation, scale, float(ref.floor.y)
+            )
     ceiling_spread = _refine_room_heights(ref, cloud.points, grid)
     write_alignment(work / "alignment.json", rotation, scale, None if ref.floor is None else float(ref.floor.y), sfm.image_size)
     samples = bootstrap(cloud, traj, ref, params, replicates=replicates, seed=seed, free_votes=votes, walls=walls)

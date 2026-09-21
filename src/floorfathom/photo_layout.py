@@ -44,6 +44,61 @@ RAY_SLACK = 0.5  # a ray still hits a wall this far (m) beyond its observed ends
 MIN_ARC_DEG = 4.0  # a wall owns at least this much of the view to become an edge
 MIN_EDGE, CORNER_CUT = 0.5, 0.9  # edges shorter than this go; up to CORNER_CUT when both neighbours meet nearby (layout.drop_short)
 CORNER_REACH = 1.0  # two walls meet at their line intersection if it is within this (m) of both observed ends
+MANHATTAN_TOLERANCE_DEG = 12.0
+MANHATTAN_MAX_EXTRA_RESIDUAL = 0.03
+
+
+def _nearest_manhattan_delta(angle_deg: float) -> float:
+    """Signed degrees from ``angle_deg`` to the nearest multiple of 90, in (-45, 45]."""
+    return ((angle_deg + 45.0) % 90.0) - 45.0
+
+
+def snap_manhattan(edges: list, tolerance_deg: float = MANHATTAN_TOLERANCE_DEG,
+                    max_extra_residual_m: float = MANHATTAN_MAX_EXTRA_RESIDUAL) -> list:
+    """Snap each supported edge's angle toward the nearest multiple of 90 degrees, weighted by its support,
+    but only where a corner is already close to Manhattan and the snap does not measurably worsen the edge's
+    fit to its own points. Closure edges (no line) are never touched."""
+    idx = [i for i, e in enumerate(edges) if e.supported and e.line is not None]
+    if len(idx) < 2:
+        return edges
+    angles = {i: float(np.degrees(np.arctan2(edges[i].line[0][1], edges[i].line[0][0]))) % 90.0 for i in idx}
+    votes, weights = [], []
+    n = len(edges)
+    for i in idx:
+        j = (i + 1) % n
+        if j not in angles:
+            continue
+        d = _nearest_manhattan_delta(angles[i] - angles[j])
+        if abs(d) <= tolerance_deg:
+            w = edges[i].support * edges[j].support
+            votes.append(angles[i] - _nearest_manhattan_delta(angles[i]))
+            weights.append(w)
+    if not votes:
+        return edges
+    ref = float(np.average(votes, weights=weights)) % 90.0
+
+    out = list(edges)
+    for i in idx:
+        delta = _nearest_manhattan_delta(angles[i] - ref)
+        if abs(delta) > tolerance_deg or abs(delta) < 1e-6:
+            continue
+        e = edges[i]
+        n_old, c_old = e.line
+        theta_old = np.arctan2(n_old[1], n_old[0])
+        theta_new = theta_old - np.radians(delta)
+        n_new = np.array([np.cos(theta_new), np.sin(theta_new)])
+        t = np.array([-n_old[1], n_old[0]])
+        t0, t1 = float(e.p0 @ t), float(e.p1 @ t)
+        extra = max(abs(t0), abs(t1)) * abs(np.sin(np.radians(delta)))
+        if extra > max_extra_residual_m:
+            continue
+        anchor = c_old * n_old
+        c_new = float(n_new @ anchor)
+        p0_new = e.p0 - (n_old @ e.p0 - c_old) * n_old
+        p0_new = p0_new - (n_new @ p0_new - c_new) * n_new
+        p1_new = e.p1 - (n_new @ e.p1 - c_new) * n_new
+        out[i] = L.Edge(p0_new, p1_new, e.supported, e.support, (n_new, c_new))
+    return out
 HEIGHT_PLANES = 6
 HEIGHT_THRESH, HEIGHT_RANGE_SLOPE = 0.08, 0.03  # floors and ceilings from depth are bowed: a wide inlier band
 HEIGHT_TILT_DEG = 6.0
@@ -246,7 +301,7 @@ def outline_from_segments(segs: list[WallSegment], grid: L.Grid) -> L.RoomOutlin
         j = (i + 1) % m
         if jump[i] and np.linalg.norm(begin[j] - end[i]) > 0.05:
             edges.append(L.Edge(end[i], begin[j], False, 0.0, None))
-    edges = L.drop_short(L.merge_collinear(edges), min_len=MIN_EDGE, corner_cut=CORNER_CUT)
+    edges = snap_manhattan(L.drop_short(L.merge_collinear(edges), min_len=MIN_EDGE, corner_cut=CORNER_CUT))
     polygon = np.array([e.p0 for e in edges])
     if len(polygon) < 3:
         return None

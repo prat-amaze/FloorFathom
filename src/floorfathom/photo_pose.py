@@ -10,6 +10,7 @@ Deterministic: all randomness comes from a seeded numpy generator.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 from scipy.sparse import coo_matrix
@@ -147,3 +148,120 @@ def register_rotations(images: list[PhotoImage], seed: int = 0, min_inliers: int
     if sum(r is not None for r in rotations) < 2:
         flags.append("insufficient_registration")
     return Poses(rotations, root, inliers, worst, flags)
+
+
+DEFAULT_F35 = 24.0  # iPhone main camera, when EXIF focal is missing
+
+
+def run_photo_sfm(photos: "PhotoSet", work, seed: int = 0) -> "SfmResult | None":
+    """Reconstruct one room's stills with pycolmap, PER_IMAGE camera mode. Returns None if no model builds."""
+    import cv2
+    import numpy as np
+    import pycolmap
+
+    from .io_photos import PhotoSet
+    from .sfm import SfmResult
+
+    work = Path(work)
+    work.mkdir(parents=True, exist_ok=True)
+    images_dir = work / "images"
+    images_dir.mkdir(exist_ok=True)
+    db, sparse = work / "db.db", work / "sparse"
+    if db.exists():
+        db.unlink()
+    if sparse.exists():
+        import shutil
+        shutil.rmtree(sparse)
+    sparse.mkdir(exist_ok=True)
+
+    names = []
+    used_default_focal = False
+    f_pxs = []
+    for im in photos.images:
+        name = im.name if Path(im.name).suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"} else im.name + ".jpg"
+        p = images_dir / name
+        cv2.imwrite(str(p), cv2.cvtColor(im.rgb, cv2.COLOR_RGB2BGR))
+        names.append(name)
+        if im.f35 is None:
+            used_default_focal = True
+        f_pxs.append(im.f_px)
+
+    w, h = photos.images[0].rgb.shape[1], photos.images[0].rgb.shape[0]
+    f_prior = float(np.median(f_pxs))
+
+    pycolmap.set_random_seed(seed)
+    reader = pycolmap.ImageReaderOptions()
+    reader.camera_model = "SIMPLE_RADIAL"
+    reader.camera_params = f"{f_prior},{w / 2},{h / 2},0"
+    extraction = pycolmap.FeatureExtractionOptions()
+    extraction.sift.peak_threshold = 0.004
+    extraction.sift.max_num_features = 8192
+    cpu = pycolmap.Device.cpu
+    pycolmap.extract_features(
+        db, images_dir, image_names=names, camera_mode=pycolmap.CameraMode.PER_IMAGE,
+        reader_options=reader, extraction_options=extraction, device=cpu,
+    )
+    # Sequential matching (each image to its neighbours) suits a walking capture; exhaustive is added
+    # on top so that any two overlapping images can still form an initial pair.
+    n_imgs = len(names)
+    pairing = pycolmap.SequentialPairingOptions()
+    pairing.overlap = max(4, n_imgs - 1)  # large window ≈ exhaustive for small rooms
+    pairing.loop_detection = False
+    pycolmap.match_sequential(db, pairing_options=pairing, device=cpu)
+    if n_imgs <= 12:  # add exhaustive on top for small sets: catches non-adjacent overlap
+        pycolmap.match_exhaustive(db, device=cpu)
+    opts = pycolmap.IncrementalPipelineOptions()
+    opts.ba_refine_focal_length = True
+    opts.ba_refine_extra_params = False
+    opts.min_model_size = 3  # keep partial models; default 10 discards small indoor reconstructions
+    opts.mapper.abs_pose_min_num_inliers = 15  # default 30; fewer needed for close-range indoor
+    opts.mapper.random_seed = seed  # deterministic mapping
+    recs = pycolmap.incremental_mapping(db, images_dir, sparse, opts)
+    if not recs:
+        return None
+
+    rec = max(recs.values(), key=lambda r: r.num_reg_images())
+    n = len(photos.images)
+    index = {name: i for i, name in enumerate(names)}
+    registered = np.zeros(n, dtype=bool)
+    centers = np.full((n, 3), np.nan)
+    rot = np.full((n, 3, 3), np.nan)
+    observations: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for image_id in rec.reg_image_ids():
+        img = rec.images[image_id]
+        i = index[img.name]
+        cam_from_world = img.cam_from_world()
+        world_from_cam = cam_from_world.inverse()
+        registered[i] = True
+        centers[i] = world_from_cam.translation
+        rot[i] = world_from_cam.rotation.matrix()
+        r_cw = cam_from_world.rotation.matrix()
+        t_cw = np.asarray(cam_from_world.translation)
+        uv, z = [], []
+        for p in img.points2D:
+            if p.has_point3D():
+                depth = float((r_cw @ rec.points3D[p.point3D_id].xyz + t_cw)[2])
+                if depth > 0:
+                    uv.append(p.xy)
+                    z.append(depth)
+        observations[i] = (np.array(uv).reshape(-1, 2), np.array(z))
+
+    cam0 = next(iter(rec.cameras.values()))
+    pts = list(rec.points3D.values())
+    result = SfmResult(
+        registered=registered, centers=centers, cam_to_world=rot,
+        intrinsics=(float(cam0.params[0]), float(cam0.params[0]), float(cam0.params[1]), float(cam0.params[2])),
+        image_size=(w, h),
+        points=np.array([p.xyz for p in pts]).reshape(-1, 3) if pts else np.zeros((0, 3), float),
+        track_length=np.array([p.track.length() for p in pts], dtype=int) if pts else np.zeros(0, int),
+        point_error=np.array([p.error for p in pts], dtype=float) if pts else np.zeros(0, float),
+        n_models=len(recs), mean_reprojection_px=float(rec.compute_mean_reprojection_error()),
+        observations=observations,
+    )
+    if used_default_focal:
+        result.flags.append("focal_prior_default")
+    if len(recs) > 1:
+        result.flags.append("sfm_split_into_several_models")
+    if result.registered_fraction < 0.6:
+        result.flags.append("sfm_registered_too_few_frames")
+    return result

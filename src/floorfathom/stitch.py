@@ -241,6 +241,79 @@ DRIFT_PLACED = (
     "the doorway position and the assumed wall thickness. Drift within one room's own walk is not corrected."
 )
 
+CORR_CENTRE_TOL, CORR_NORMAL_TOL_DEG = 0.15, 8.0
+
+
+def _corr_candidates(rooms):
+    """Every pair of doorways on two different placed rooms whose centres and opposed normals nearly agree."""
+    out = []
+    for i, ra in enumerate(rooms):
+        for oa in ra.openings:
+            na = _inward_normal(ra, np.asarray(oa.centre, float))
+            for rb in rooms[i + 1:]:
+                for ob in rb.openings:
+                    nb = _inward_normal(rb, np.asarray(ob.centre, float))
+                    d = float(np.linalg.norm(np.asarray(oa.centre, float) - np.asarray(ob.centre, float)))
+                    ang = float(np.degrees(np.arccos(np.clip(-na @ nb, -1, 1))))
+                    if d <= CORR_CENTRE_TOL and ang <= CORR_NORMAL_TOL_DEG:
+                        out.append((ra.id, rb.id, np.asarray(oa.centre, float), np.asarray(ob.centre, float)))
+    return out
+
+
+def refine_global(rooms, placements, wall: float = WALL):
+    """Jointly refine every room's (angle, shift) over all doorway correspondences at once, initialized from
+    the sequential solve. Falls back to ``placements`` unchanged when there are not enough non-outlier
+    correspondences to over-determine the system."""
+    from scipy.optimize import least_squares
+
+    by_id = {p.room: p for p in placements}
+    ids = [r.id for r in rooms if r.id in by_id]
+    if len(ids) < 2:
+        return placements
+    corr = _corr_candidates(rooms)
+    dof = 3 * (len(ids) - 1)
+    if len(corr) * 2 < dof + 2:
+        return placements
+
+    root = ids[0]
+    var_ids = [i for i in ids if i != root]
+    x0 = np.concatenate([[by_id[i].angle, *by_id[i].shift] for i in var_ids])
+    index = {i: k for k, i in enumerate(var_ids)}
+
+    def pose(i, x):
+        if i == root:
+            return 0.0, np.zeros(2)
+        a, sx, sy = x[3 * index[i]:3 * index[i] + 3]
+        return a, np.array([sx, sy])
+
+    def residuals(x):
+        out = []
+        for ida, idb, ca, cb in corr:
+            aa, sa = pose(ida, x)
+            ab, sb = pose(idb, x)
+            wa = _rot(aa) @ ca + sa
+            wb = _rot(ab) @ cb + sb
+            out.extend((wa - wb).tolist())
+        return np.array(out)
+
+    fit = least_squares(residuals, x0, loss="soft_l1", f_scale=CORR_CENTRE_TOL)
+    resid1 = fit.fun.reshape(-1, 2)
+    kept_mask = np.linalg.norm(resid1, axis=1) <= max(CORR_CENTRE_TOL, 3 * np.median(np.linalg.norm(resid1, axis=1)))
+    if not kept_mask.all():
+        corr = [c for c, k in zip(corr, kept_mask) if k]
+        if len(corr) * 2 < dof + 2:
+            return placements
+        fit = least_squares(residuals, x0, loss="soft_l1", f_scale=CORR_CENTRE_TOL)
+
+    out = []
+    for p in placements:
+        if p.room == root or p.room not in index:
+            out.append(p)
+            continue
+        a, s = pose(p.room, fit.x)
+        out.append(p.model_copy(update={"angle": float(a), "shift": (float(s[0]), float(s[1]))}))
+    return out
+
 
 def describe(rooms: list[RoomPlan], placements: list[Placement], unplaced: list[str], drift: str) -> Stitching:
     """Adjacency, overlaps and footprint of rooms that are already in one frame."""
@@ -278,6 +351,8 @@ def stitch_plans(plans: list[CapturePlan], name: str) -> CapturePlan:
             rid = r.id if all(r.id != o.id for o in rooms) else f"{plan.capture}_{r.id}"
             rooms.append(r.model_copy(update={"id": rid, "name": r.name or plan.capture}))
     out = stitch(rooms)
+    placements = refine_global(out.rooms, out.placements)
+    out = Stitched(out.rooms, placements, out.unplaced)
     diag = plans[0].diagnostics
     notes = [n for p in plans for n in p.diagnostics.notes]
     return CapturePlan(
