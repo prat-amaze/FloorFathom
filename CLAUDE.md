@@ -89,13 +89,34 @@ where the output lands, known limits. Outputs go to `out/` (git-ignored); clear 
   B2 19.4 min (B2 while tests ran on the same machine). Earlier: 24-35 min at 0.15 s spacing, 11 min at 0.3 s (which lost the H1
   ceiling and moved its scale by 21%). All caches present: H1 98 s including the ray pass, bootstrap and damage; the H1 + B1 folder command 182 s (B1 stays in its own frame: no doorway fits).
   Keyframe spacing is `KEYFRAME_STEP_S` / `run_clip(keyframe_step_s=...)`.
-- Limits (Data/, tape in `ground_truth.json`; accuracy is the open part, the pipeline itself runs end to end): walls still miss the
-  +-3% gate (0 of 4 on H1: one wall -6%, the other three come out as fragments (now subject to global wall-line augmentation and re-merge; re-evaluation needed); the depth-model walls bow and kink by several cm),
-  openings 0 of 4 on H1 (widths 55-125 cm; a through-ray detector finds doors at 63-75 cm against 71-81; now integrated (re-evaluation needed)),
-  ceiling on H1 285.5 cm against 279 (+6.5 cm, tape inside the interval; B1 and B2 show none). With ray free space the room
-  polygon is right in kind: H1 22.0 m2 in 13 edges (was 19.3 m2 in 38, a glossy-floor cloud fragments), B1 5.66 m2 in 4 edges (tape 6.12).
-  H1 vs H2 repeatability and `Full.MOV` not run. The result on H1 changes between runs (depth maps and keyframe spacing move it),
-  and the damage found changes with it. Interval widths are large where the leave-chunks-out replicates disagree (H1 area 11-33 m2).
+- Results (Data/, tape in `ground_truth.json`; post the glossy-floor reflection fix, commit that added
+  `video_heights.floor_from_strongest_spike`). Reflection fix: a glossy floor mirrors the room below itself and fooled
+  `find_floor` into a floor 1.5 m too low; dropping points below the true floor (strongest spike) recovers it. On H1 this
+  moved openings from 1 to 6 detected and `kitchen_side_wall` from +15.6% to +0.3% (see `Deliverables/fix_loop/`).
+  - Walls +-3% gate: 3 of 16 across the four captures (H1 1/4 kitchen 527/526; H2 0/4; B1 0/4; B2 2/4 - 352/361, 293/301.5).
+    Accuracy tracks capture coverage: B2 (small, fully swept) best; the hall (large, walked diagonally) 0-1/4. The three long
+    hall walls are fragments because the camera never swept them face on. Depth-model walls also bow/kink by several cm.
+  - Openings: H1 6/6 detected, 1/6 within the +-2 cm gate (main_door 108/107); the three interior doors read wide (129-159 vs
+    71-81) on the sheared outline. A capture-coverage limit, not the floor bug.
+  - Ceiling: observed on 2 of 4 (H2 288.7 +9.7, B2 263.8 -15.2), never within +-1.5 cm; reported not-observed on H1 and B1
+    rather than guessed (bowed/smeared depth-model ceiling with competing spikes).
+  - Areas: H1 23.2 (~24), H2 19.7, B1 5.30 (tape 6.12), B2 11.04 (tape 10.88, +1.5%).
+  - Repeatability H1 vs H2 (same hall): 0/4 walls within 1 cm / 0.5% - FAIL. Root cause is different scale source (H1's ruler
+    triangulation was implausible -> depth-model scale; H2's ruler accepted), so the two sit on different metric bases (area
+    23.2 vs 19.7). The ruler is fragile on a small near-vertical object with a short baseline. Consistent ruler acceptance is
+    the top repeatability fix.
+  - Whole-property stitch (`out/clips` -> `out/video`, 213 s cached): H1 and B2 glue via the correct doorway (mutual, gap
+    0.15 m; footprint 34.3 m2); B1 stays unplaced (no doorway seen). Correct adjacency vs tape (hall <-> b2_door <-> master bed).
+    Drift: each clip is its own SfM frame placed by doorways, so no cross-room pose chain accumulates; within-clip drift is
+    handled by SfM bundle adjustment (`stitching.drift` in `out/video/plan.json`).
+  - Whole-flat single clip (`Data/Full.MOV`, 107 s, ~530 keyframes, 21.8 min): a single clip is one room by design, but
+    SfM splits a whole-flat walk into several models (`sfm_split_into_several_models`), so the run recovers 2 partial rooms
+    (area 24.9 and 6.5 m2; ceilings 291.5 and 305.6 cm - both observed) and stitches them (footprint 31.4 m2, 2 mutual
+    doorway links, none unplaced). It does not recover all 4 rooms: the folder-of-clips command (one clip per room) is the
+    supported multi-room path; Full.MOV degrades gracefully rather than failing.
+  - Tests: full suite 229 passed, 15 skipped, 1 pre-existing LiDAR determinism flake (unrelated to video); all 43 video-tier
+    tests pass. The result on H1 changes between runs (depth maps and keyframe spacing move it), and the damage found changes
+    with it. Interval widths are large where the leave-chunks-out replicates disagree (H1 area 7-39 m2).
 
 ### Photo tier: floor plan and room plan commands
 
@@ -107,18 +128,29 @@ where the output lands, known limits. Outputs go to `out/` (git-ignored); clear 
 - Outputs: `plan.json` (stitched property plan; each room keeps its own frame if it could not be placed), `rooms/<room>.json`
   (that room's own plan), `plan.png`, `debug/damage/<surface>.png`, `work/depth/` (cached depth maps: a rerun of the same
   photos into the same `--out` skips the model and gives the same numbers).
-- How: SIFT rotation-only registration of the stills from one spot, monocular metric depth (Depth Anything V2 Metric-Indoor
-  Small, fetched by `floorfathom fetch-models`, offline afterwards), depth scales harmonised across overlaps, gravity from wall
-  thinness, wall/floor/ceiling planes by RANSAC, walls outlined by ray casting. Scale comes from the yellow reference ruler
-  when it is found in the photos (`photo_reference`), else from the model with a 30% scale uncertainty. Intervals: leave-one-photo-out
-  plus assumed systematic terms plus scale uncertainty. Thin input gives wider intervals or null values, never a confident guess.
-- Code: `io_photos`, `photo_pose`, `photo_scene`, `photo_layout`, `photo_reference`, `photo_pipeline.run_photo`,
+- How: per-image pycolmap SfM (one camera per still, EXIF focal, `PER_IMAGE` mode; `photo_pose.run_photo_sfm`) recovers real
+  camera poses when the stills overlap with a translation baseline. When SfM registers fewer than 60% of the stills (or fails),
+  it falls back to the old SIFT rotation-only single-station registration (`register_rotations`), flagged
+  `sfm_underregistered_..._used_rotation_only` / `sfm_fell_back_to_rotation_only`. Either way: monocular metric depth
+  (Depth Anything V2 Metric-Indoor Small, `floorfathom fetch-models`, offline afterwards) densified onto the cloud
+  (`points_video`), gravity (`world`/wall thinness), wall/floor/ceiling planes by RANSAC, an evidence-weighted Manhattan angle
+  snap (`photo_layout.snap_manhattan`), walls outlined by ray casting. Scale comes from the yellow ruler triangulated across
+  ≥3 registered stills (`photo_reference.ruler_scale_sfm`/`anchor`), else from the model with a 30% scale uncertainty.
+  Intervals: leave-one-photo-out plus assumed systematic terms plus scale uncertainty. Thin input gives wider intervals or
+  null values, never a confident guess.
+- Code: `io_photos`, `photo_pose` (SfM + rotation-only fallback), `photo_scene` (`build_scene_sfm` and rotation `build_scene`),
+  `photo_layout` (+ `snap_manhattan`), `photo_reference` (`ruler_scale_sfm`), `photo_pipeline.run_photo`, `stitch.refine_global`,
   `photo_damage` (shared damage stack on the photo frames).
-- Limits (Data/, tape in `ground_truth.json`, first real run): the ±8% wall gate is not met. Areas are null in all three rooms
-  (outline incomplete: some walls are never seen from one spot), and unseen walls get no length. Ceiling with the ruler: Hall
-  3.10 m and B2 2.44 m vs 2.79 m tape, intervals contain the tape; B1 has no ruler found (3.32 m, interval 1.3-5.3 m).
-  Unregistered photos: 3 of 6 in B1, 2 of 9 in Hall. Depth scale differs from photo to photo, so B2 and Hall carry
-  `depth_scale_inconsistent`/`pose_loop_inconsistent`. Only four rooms exist, so the intervals are uncalibrated.
+- Limits (Data/, tape in `ground_truth.json`, real run of all four photo rooms, 2026-09-21): the ±8% wall gate is met by
+  **0 of 4 rooms** and floor area is **null in every room** — the real captures are 6-9 wide-baseline stills that
+  under-register in SfM (Hall 4/8, Hall2 4/9, B1 SfM-failed → all fall back to the single-station path; B2 registered but its
+  full-length mirror doubled the room), so no outline closes (`open_boundary`) and walls come out as fragments. Ceilings are
+  biased high: Hall 3.04 m (ruler), Hall2 3.97 m, B1 3.81 m vs 2.79 m tape — every interval contains the tape, the no-ruler
+  rooms very widely; B2's ceiling is not observed. Only the Hall found a usable ruler; Hall2/B1/B2 fell back to the depth-model
+  scale and B2 is mis-scaled 2-3× (walls 6-9 m in a 3.6 m room). Repeatability Hall vs Hall2 FAILS (ceiling 30% apart,
+  different scale source: ruler vs depth model). Whole-property stitch fails: no room detected a doorway, so nothing glues.
+  The blocker is capture coverage/overlap (`capture_protocol.md`), not the estimator. Only four rooms exist, so intervals are
+  uncalibrated. Per-room cold time: Hall 73 s, Hall2 65 s, B1 83 s, B2 142 s.
 
 ### Video-tier damage
 
@@ -158,8 +190,9 @@ where the output lands, known limits. Outputs go to `out/` (git-ignored); clear 
 - Dev tools: `scripts/eval_damage_photo.py out/photo/plan.json` (scores the tape-measured items of `ground_truth.json`),
   `scripts/export_photo_patches.py Data out/damage_patches/photo --cache-dir out/photo` (saves the real unrolled patches
   for `scripts/eval_damage_patches.py --dir`; needs the depth cache of a finished run).
-- Limits (first real run, rules-based detector): the staged 21 x 25 cm leakage mark in the Hall was found at 22.5 x 25.5 cm,
-  both tape values inside the intervals. The 12 x 22 cm kitchen crack was not found: the Hall walls facing the kitchen are
-  mostly not seen face on, and a hairline crack is not resolvable in stills. The run gave 7 other regions, all false: door
-  frame edges and grain as cracks, a power socket as mould, window bars, a curtain and a wardrobe edge as cracks or soot. On
-  the 22 real patches 6 of 23 checks fail. Only one room in a run has a tape-measured mark, so the size error is one sample.
+- Limits (real 4-room run 2026-09-21, `out/photo`, rules-based detector, `scripts/eval_damage_photo.py`): 1 of 2 staged
+  items found. The 21 x 25 cm leakage mark in the Hall was found at 17 x 26 cm (class `water_stain` correct; height inside
+  the interval [22.0, 30.1], width 17 vs 21 short/outside). The 12 x 22 cm kitchen crack was not found: the Hall walls facing
+  the kitchen are mostly not seen face on, and a hairline crack is not resolvable in stills. The run gave 10 other regions,
+  all false: on B1 (undamaged) 3 wood-grain cracks and 2 wardrobe/wall soot regions, on the Hall 2 extra water stains, on
+  Hall2 3 grain cracks. Only one room in a run has a tape-measured mark, so the size error is one sample.
