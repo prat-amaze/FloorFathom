@@ -13,6 +13,7 @@ gives a plan with no rooms and the reason, never an invented number.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import pickle
@@ -20,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+import cv2
 import numpy as np
 
 from .anchor import REFERENCE_LENGTH_M, VIDEO_STRIP_COLOUR, estimate_anchor, track_strip
@@ -34,6 +36,7 @@ from .schema import CapturePlan, Diagnostics, Measurement, RoomPlan, Stitching
 from .sfm import MIN_REGISTERED, run_sfm
 from .stitch import stitch_plans
 from .uncertainty import bootstrap, jackknife_scale
+from .video_heights import refine_heights
 from .video_rays import build_rays, carve, seen_from_votes
 from .video_walls import wall_finder
 from .world import estimate_gravity, refine_gravity
@@ -91,6 +94,27 @@ def _choose_scale(
     if bad:
         return depth_scale, depth_rel, "monocular_depth", ["reference_strip_rejected", *bad]
     return anchor.scale, float(np.hypot(anchor.rel_sigma, STRIP_LENGTH_REL)), "reference_object", []
+
+
+def _refine_room_heights(ref, points: np.ndarray, grid) -> dict[int, float]:
+    """Re-centre each room's floor and ceiling on where its points lie (``video_heights``); returns each room's ceiling
+    spread (m), which widens the ceiling interval: a depth-model ceiling is bowed by several centimetres."""
+    spreads: dict[int, float] = {}
+    ix, iz = grid.index(points[:, [0, 2]])
+    ok = grid.inside(ix, iz)
+    for k, room in enumerate(ref.rooms):
+        if room.floor is None:
+            continue
+        near = cv2.dilate(room.outline.mask.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+        sel = np.zeros(len(points), dtype=bool)
+        sel[ok] = near[iz[ok], ix[ok]]
+        h = refine_heights(points[sel][:, 1], room.floor.y, None if room.ceiling is None else room.ceiling.y)
+        if h.refined:
+            room.floor = dataclasses.replace(room.floor, y=h.floor_y)
+            if room.ceiling is not None:
+                room.ceiling = dataclasses.replace(room.ceiling, y=h.ceiling_y)
+                spreads[k] = h.ceiling_spread
+    return spreads
 
 
 def _no_plan(name: str, seconds: float, seed: int, notes: list[str], sfm=None, n_keyframes: int = 0) -> CapturePlan:
@@ -303,6 +327,7 @@ def run_clip(
         votes = carve(rays, rotation, scale, grid, float(floor0.y))
     walls = wall_finder(float(np.median((sfm.centers[sfm.registered] @ rotation.T * scale)[:, 1])), seed=seed)
     ref = estimate(cloud.points, traj, params, grid=grid, free_hint=None if votes is None else seen_from_votes(votes), walls=walls)
+    ceiling_spread = _refine_room_heights(ref, cloud.points, grid)
     write_alignment(work / "alignment.json", rotation, scale, None if ref.floor is None else float(ref.floor.y), sfm.image_size)
     samples = bootstrap(cloud, traj, ref, params, replicates=replicates, seed=seed, free_votes=votes, walls=walls)
     plan = capture_plan(
@@ -318,6 +343,8 @@ def run_clip(
         for w in room.walls:
             _widen(w.length, rel)
         _widen(room.ceiling_height, rel)
+        if room.ceiling_height.value:
+            _widen(room.ceiling_height, 1.96 * ceiling_spread.get(int(room.id.split("_")[1]), 0.0) / room.ceiling_height.value)
         _widen(room.floor_area, 2 * rel)
         for o in room.openings:
             _widen(o.width, rel)
