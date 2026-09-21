@@ -94,7 +94,9 @@ def run_lidar(
     correct_drift: bool = True,
     drift_ablation: bool = True,
     assess_damage: bool = True,
+    reference_length_m: float | None = None,
 ) -> CapturePlan:
+    """LiDAR depth is metric, so ``reference_length_m`` (the ruler of the photo and video tiers) is accepted and ignored."""
     t0 = time.perf_counter()
     stages: dict[str, float] = {}
 
@@ -143,6 +145,8 @@ def run_lidar(
             "no real damage was available to check them (README)."
         )
         lap("damage")
+    if reference_length_m is not None:
+        plan.diagnostics.notes.append("--reference-length-cm was ignored: LiDAR depth is metric and needs no reference object.")
     plan.diagnostics.seconds = time.perf_counter() - t0
     plan.diagnostics.notes.append("Seconds per stage: " + ", ".join(f"{k} {v:.0f}" for k, v in stages.items()) + " (no caches are used).")
     out.mkdir(parents=True, exist_ok=True)
