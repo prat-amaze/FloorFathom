@@ -1,236 +1,224 @@
 # FloorFathom
 
-Handheld iPhone captures to a dimensioned floor plan, one command per capture. Built for
-the Cozmo AI case study (`Applied AI.pdf`).
-
-## Status
+Handheld iPhone captures to a dimensioned, stitched floor plan with damage regions and scope items, one command
+per capture. Built for the Cozmo AI case study (`Applied AI.pdf`). Three input tiers (LiDAR, video, photos) produce
+the same JSON (`schema/capture_plan.schema.json`).
 
 | Tier | State |
 |---|---|
-| LiDAR (depth + poses + intrinsics) | **Per-room plans, stitched plan, drift correction and damage working** (this document). |
-| Video | **Runs end to end, one room per clip; misses the wall and opening gates on real clips** (see "Video tier"). |
-| Photos | Not started. |
+| LiDAR (Stray Scanner folder: depth, poses, intrinsics) | Runs end to end: per-room plans, stitched plan, drift correction, damage. No tape truth exists for `CozmoData/`, so accuracy is unmeasured. |
+| Video (one `.MOV` per room, yellow ruler taped up) | Runs end to end. Misses the +-3% wall and the opening gates on the real clips. |
+| Photos (HEIC stills, one folder per room) | Runs end to end. Areas are null in all three rooms of `Data/`; the +-8% wall gate is not met. |
 
-Whole-property stitching (`stitch.py`) is built and tested on synthetic layouts: doorway
-adjacency, overlap check, footprint with an interval, and placement of rooms that arrive
-in their own frames (video, photo) by gluing their doorways. It has not been run on real
-video or photo rooms yet. Damage regions, concealed-damage flags and scope items are described under "Damage".
+Measured results and their caveats: `Deliverables/benchmark_report.md` and `docs/verification_notes.md`.
+Regenerating them from raw inputs: the separate reproduction bundle (not in this repo).
 
-## Run it
+## Quick start: clean machine to first plan
+
+Needs `git`, [`uv`](https://docs.astral.sh/uv/) and about 2.5 GB of free disk. Python 3.11 is fetched by `uv` if the
+machine lacks it. Nothing else is installed by hand: video and HEIC decoding come in the Python wheels (no ffmpeg).
+On a bare Windows machine the Microsoft Visual C++ 2015-2022 x64 runtime may be needed for torch (not tested without it).
 
 ```
-uv sync
-uv run floorfathom plan <capture_folder> --out out/<name>
+git clone https://github.com/prat-amaze/FloorFathom.git FloorFathom && cd FloorFathom
+uv sync --locked                   # 2.6 min cold, includes CPU torch from download.pytorch.org
+uv run floorfathom fetch-models    # 38 s, 99 MB depth model from Hugging Face; the only step needing the network after uv sync
+uv run floorfathom plan <capture> --out out/<name>
 ```
 
-`<capture_folder>` holds `depth/`, `confidence/`, `odometry.csv`, `camera_matrix.csv`,
-`rgb.mp4` (the layout of `CozmoData/*`). The tier is detected from the folder.
+Run `fetch-models` before the first photo or video capture. Without it those tiers fail late (photo after SfM, video
+after its roughly 14 minute SfM stage). After `fetch-models` everything runs offline.
 
-Outputs in `--out`:
+Measured on one Windows 11 laptop (12 cores, 7.3 GB RAM, fast network, Python 3.11 and the VC++ runtime already present):
 
-- `plan.json`: the output contract. Every measurement is `{value, lo, hi, unit, method}`,
-  a 95% interval. A quantity that was not measured is `null` with a note, never a guess.
-  The schema is published in `schema/capture_plan.schema.json` (`floorfathom schema`).
-- `plan.png`: the rendered plan, top-down, with wall lengths, area, ceiling height and
-  doorways.
-- `debug/points.ply`, `debug/topdown.png`, `debug/height_hist.png`: the raw geometry next
-  to what was extracted, for checking by eye.
+| Step | Time |
+|---|---|
+| `uv sync`, cold uv cache | 154 s |
+| `fetch-models` | 38 s |
+| Ready to run `plan` | about 3.5 min (Python download, if absent, adds 15 s; a slow link stretches the two downloads) |
+| First LiDAR plan, cold (`single_room` 2.0 min, `single_scan_floor_only` 4.2, `single_scan_with_ceiling` 7.2) | 2-7 min |
+| First photo plan (one room about 1-1.5 min, three rooms 4 min cold) | 1-4 min |
+| First video plan, one clip, cold | **13.6-19.4 min**, so video does not fit the 15 minute budget on this machine |
 
-Options: `--bootstrap N` (replicates for the intervals, default 20), `--seed`, `--no-debug`.
-Runs are deterministic: same input and seed give the same JSON.
+So install plus a first plan lands under 15 minutes for the LiDAR and photo tiers. For video, install is ready in
+about 4 minutes and the cold SfM stage takes 14 to 20 minutes per clip (clips run one after another); a rerun into the
+same `--out` reuses `work/` and takes about 100 s. Every `uv run` spends about 3.5 s importing before it starts.
 
-Timing on the sample scans (laptop, CPU): `single_room` 37 s, `single_scan_floor_only`
-86-93 s, `single_scan_with_ceiling` 120-130 s, of which about half is building the cloud.
+## One command per capture
+
+Before you capture: follow `capture_protocol.md` literally. For photos and video, tape-measure the yellow ruler's yellow
+body and pass it as `--reference-length-cm` (ours is 31.6). Copy the original files off the phone (AirDrop, cable),
+never through a messenger, and do not rename, crop or trim them.
+
+### LiDAR: one continuous walk of the whole property
+
+```
+uv run floorfathom plan <scan_folder> --out out/<name>
+```
+
+`<scan_folder>` is a Stray Scanner export, unchanged: `depth/<id>.png` (uint16, mm), `confidence/<id>.png`,
+`odometry.csv` (columns `timestamp, frame, x, y, z, qx, qy, qz, qw`, optionally `fx, fy, cx, cy`), `camera_matrix.csv`
+(read only when `odometry.csv` has no `fx`) and `rgb.mp4` (damage uses it). LiDAR depth is metric, so no ruler is needed;
+`--reference-length-cm` is accepted and ignored (a note says so in `plan.json`). One scan folder per command (`CozmoData/` itself is the parent of three scans).
+Live capture on a Pro iPhone is untested; the Cozmo sample scans in `CozmoData/` are the LiDAR data we ran.
+
+### Video: one clip is one room, a folder of clips is one stitched property
+
+```
+uv run floorfathom plan path/to/Hall.MOV --out out/hall --reference-length-cm 31.6         # one room
+uv run floorfathom plan path/to/folder_of_clips --out out/flat --reference-length-cm 31.6  # whole property
+```
+
+Each clip starts with the ruler taped up and in view for the first 15 s (the "ruler move" in `capture_protocol.md`).
+The room is named after the clip's file stem. The folder must hold only that property's `.MOV` or `.mp4` files, at top
+level. A room with no doorway that fits stays in its own frame and is listed in `stitching.unplaced`.
+
+### Photos: one folder per room, all rooms stitched
+
+```
+uv run floorfathom plan <root> --tier photo --out out/<name> --reference-length-cm 31.6
+```
+
+`<root>/<room>/*.HEIC` (or `<root>/images/<room>/*.HEIC`; `.heic .heif .jpg .jpeg .png` are read). The subfolder name is
+the room name. A single room folder works the same way: `uv run floorfathom plan <room_folder> --tier photo ...`.
+Always write `--tier photo`; automatic detection fails on a flat folder of stills.
+
+### How the tier is chosen
+
+Automatic, in this order: a `.mov`/`.mp4` path is video; a folder with `depth/` and `odometry.csv` is LiDAR; a folder with
+a top-level `.MOV`/`.mp4` is video; a folder with an `images/` folder or any subfolder is photo; anything else is an
+error. Where that guess is wrong pass `--tier lidar|video|photo`. Known traps: `Data/` mixes `.MOV` files and room
+folders, so it needs `--tier photo` (or copy the wanted clips into a fresh folder for video), and a LiDAR folder without
+`odometry.csv` is silently routed to photo or video.
+
+### Options
+
+| Flag | Meaning |
+|---|---|
+| `--out DIR` | output folder (default `out`) |
+| `--tier {lidar,video,photo}` | override tier detection |
+| `--reference-length-cm CM` | photo and video: tape-measured length of the ruler's yellow body (default 31.6); ignored by LiDAR |
+| `--seed N` | random seed (default 0); LiDAR repeats exactly, photo when its depth cache is present, video does not (see below) |
+| `--bootstrap N` | replicates for the intervals (default 20); LiDAR and video only, photo uses leave-one-photo-out |
+| `--no-debug` | skip debug output; LiDAR and photo only (video always writes its damage images) |
+
+## Reading the result
+
+Every run prints a summary and `wrote <out>/plan.json and <out>/plan.png`.
+
+- `plan.png`: the top-down plan with wall lengths, area, ceiling height, doorways and damage marked. Open this first.
+- `plan.json`: the contract. Every measurement is `{value, lo, hi, unit, method}`, a 95% interval; a quantity that was not
+  measured is `null` with a note, never a guess. Check each room's `flags` and `diagnostics.notes`, which say what could
+  not be judged. The stitched plan adds `stitching` (adjacency, overlaps, footprint, placed and unplaced rooms).
+- `rooms/<room>.json`: each room's own plan. `debug/damage/<surface>.png`: each wall, floor and ceiling unrolled, damage
+  outlined. LiDAR also writes `debug/points.ply`, `topdown.png`, `height_hist.png`.
+- `work/` (photo and video): caches (depth maps, SfM, dense cloud). A rerun into the same `--out` reuses them.
+
+Validate a `plan.json` against the schema (the schema is generated from the same model, `uv run floorfathom schema`):
+
+```
+uv run python -c "import sys,pathlib; from floorfathom.schema import CapturePlan; p=CapturePlan.model_validate_json(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')); print('valid', p.schema_version, p.tier, len(p.rooms), 'room(s)')" out/<name>/plan.json
+```
+
+## When it goes wrong
+
+Exit codes: 0 success (a run that finds no room still exits 0, with flags), 2 path does not exist, 3 `fetch-models`
+failed, 1 any other error (a traceback).
+
+| Symptom | Cause and fix |
+|---|---|
+| `ModelError: model 'depth-anything-v2-metric-indoor-small' is not usable ... Run: floorfathom fetch-models` | Model not fetched. Run `uv run floorfathom fetch-models`. Video keeps `sfm.pkl`, so a rerun resumes. |
+| `ValueError: cannot tell the input tier of ...` | Empty folder or an unrecognised layout. Pass `--tier`. |
+| `no photos found under ...` / `no video clips found in ...` | The folder has no stills or clips at the level the tier reads. |
+| Room flagged `reference_ruler_not_found` / `reference_strip_not_found`, `scale_from_depth_model_only` | No ruler found. Not an error: the scale comes from the depth model with a 15% (video) or 30% (photo) scale interval. Recapture with the ruler flat, upright and in view. |
+| `sfm_failed`, `sfm_registered_too_few_frames`, 0 rooms | SfM could not register the video. Recapture slowly with sideways steps and texture in view. |
+| `image_unregistered:<file>` | Some photos could not be placed; the room is still built from the rest. Take more photos per room, in smaller steps (12-20). |
+| `IndexError` in `run_photo_sfm`, no `plan.json` | Every photo in one room folder was unreadable. |
+| `pycolmap` log lines on stderr | Normal in photo and video runs. |
+
+Runs are deterministic for LiDAR, and for photo when the depth cache is present. Video results change between runs
+(multithreaded COLMAP, depth maps, keyframe spacing) and so does the damage found on them.
+
+## Models and third-party components
+
+- Depth model: Depth Anything V2 Metric-Indoor Small, `depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf`, revision
+  `8078d68a9c75a972131914f6afd0c1723be0da7f`, files pinned by SHA-256 in `src/floorfathom/models.py`. Licence: Apache-2.0 per
+  the upstream Depth-Anything-V2 repository; the `-hf` conversion declares none. Stored in `models/` (git-ignored), or
+  `$FLOORFATHOM_MODELS`. Used by the photo and video tiers only; the LiDAR tier uses no learned model.
+- Structure from motion: `pycolmap` (CPU). Damage classification is our own rules; a pretrained CLIP classifier was tried and dropped.
+- Ruler scale, gravity, wall and opening detection, stitching, drift correction and uncertainty are our own code.
 
 ## How it works
 
+The LiDAR tier is the core; the other tiers turn their input into a metric, gravity-aligned point cloud and reuse it.
+
 1. `io_lidar.py`: read depth (mm), confidence, poses, intrinsics rescaled to the 256x192 depth grid.
-2. `points.py`: back-project to a gravity-aligned world point cloud. Conventions were found
-   by search, not assumed: depth as-is, OpenCV camera axes, quaternion is camera-to-world,
-   world +y up. The picture in `rgb.mp4` looks rotated 90 degrees; that is only the sensor's
-   fixed landscape orientation and does not affect geometry.
-3. `planes.py`: floor and ceiling are spikes in the height histogram; ceiling height is
-   their distance. No ceiling spike means `null`, not an estimate.
-4. `layout.py`, `estimate.py`: walls are cells occupied over most of 0.25-2.05 m of height
-   (furniture is not). Free space is observed floor minus walls. Doorways are closed by
-   extending wall segments across gaps up to 1.1 m, rooms are connected free space the
-   camera visited, each outline is simplified and snapped to fitted wall lines. Right
-   angles are never assumed. Doorways are gaps in the wall evidence a closure crosses.
-5. `uncertainty.py`: intervals from a delete-2-of-20-chunks jackknife with a robust
-   spread, plus an assumed systematic term. Rooms whose shape flips between replicates
-   are flagged and their interval is stretched to cover the disagreement.
+2. `points.py`: back-project to a gravity-aligned world point cloud. Conventions were found by search, not assumed: depth
+   as-is, OpenCV camera axes, quaternion is camera-to-world, world +y up. The picture in `rgb.mp4` looks rotated 90
+   degrees; that is only the sensor's fixed landscape orientation.
+3. `planes.py`: floor and ceiling are spikes in the height histogram; ceiling height is their distance. No ceiling spike
+   means `null`, not an estimate.
+4. `layout.py`, `estimate.py`: walls are cells occupied over most of 0.25-2.05 m of height (furniture is not). Free space is
+   observed floor minus walls. Doorways are closed by extending wall segments across gaps up to 1.1 m, rooms are connected
+   free space the camera visited, each outline is simplified and snapped to fitted wall lines. Right angles are never
+   assumed. Doorways are gaps in the wall evidence a closure crosses.
+5. `uncertainty.py`: intervals from a delete-2-of-20-chunks jackknife with a robust spread, plus an assumed systematic
+   term. Rooms whose shape flips between replicates are flagged and their interval is stretched to cover the disagreement.
 6. `report.py`, `schema.py`, `render.py`, `debug.py`, `cli.py`: contract, drawing, CLI.
-7. `stitch.py`: each doorway is linked to the nearest other room outline within 1.5 m (the
-   gap is kept as evidence), overlapping rooms are found, the footprint is the union of
-   the room polygons. Rooms in their own frames are placed by gluing doorway to doorway
-   (inward normals opposite, centres one assumed 0.15 m wall apart), most certain room
-   first; a room with no doorway that fits is reported as unplaced, near-ties are flagged.
-8. `drift.py`: per-chunk (x, z, yaw) drift from wall registration between time chunks of
-   the walk, weighted by how well each pair constrains it. Applied to every LiDAR run
-   before the room estimate, with the on/off footprint ablation reported in `plan.json`
-   (`stitching.drift`). `run_lidar(correct_drift=False)` switches the correction off and
-   `drift_ablation=False` skips the extra uncorrected run (there is no CLI flag for either).
+7. `stitch.py`: each doorway is linked to the nearest other room outline within 1.5 m, overlapping rooms are found, the
+   footprint is the union of the room polygons, and a global refinement (`refine_global`) adjusts placements. Rooms in their
+   own frames (video, photo) are placed by gluing doorway to doorway (inward normals opposite, centres one assumed 0.15 m wall
+   apart), most certain room first; a room with no doorway that fits is reported as unplaced, near-ties are flagged.
+8. `drift.py`: per-chunk (x, z, yaw) drift from wall registration between time chunks of the walk, applied to every LiDAR run
+   before the room estimate, with the on/off footprint ablation in `plan.json` (`stitching.drift`).
+   `run_lidar(correct_drift=False)` switches it off (no CLI flag).
 
-## Verification
+**Video tier** (`video_pipeline.py`): keyframes every 0.2 s (`io_video.py`), poses and sparse points by SfM (`sfm.py`), a dense
+cloud from the depth model fitted to the SfM depths (`points_video.py`), gravity from the floor and ceiling (`world.py`).
+SfM has no scale: the yellow ruler (`anchor.py`) is triangulated in the first 15 s and its tape length gives metres per SfM
+unit. Then the LiDAR estimator with video-only inputs: camera-ray free space (`video_rays.py`), wall lines fitted to the whole
+cloud (`video_walls.py`), floor and ceiling re-centred on their point plateau (`video_heights.py`) and through-ray doorway
+detection (`video_openings.py`).
 
-`uv run pytest` (about 6 minutes): 12 tests on synthetic captures with exactly known
-geometry, ray-cast into depth frames with noise and written in the real file layout.
+**Photo tier** (`photo_pipeline.py`): per-room registration of the stills (`photo_pose.py`), depth-model cloud
+(`photo_scene.py`), ruler scale from several photos (`photo_reference.py`), wall planes by RANSAC with an evidence-weighted
+Manhattan angle snap (`photo_layout.py`). Intervals come from leave-one-photo-out plus assumed systematic and scale terms.
+Thin input gives wider intervals or null values, never a confident guess.
 
-| Case | Truth | Recovered |
-|---|---|---|
-| Rectangle 5.0 x 4.0 m, ceiling 2.6 m | 20.00 m2, walls 5/4/5/4 | 19.998 m2, walls within 3 cm, ceiling within 1.5 cm |
-| Same room rotated 27 degrees | 20.00 m2 | within 1.5% |
-| L-shaped room | 18.00 m2, 6 walls | within 3%, 6 walls |
-| Two rooms, 0.90 m doorway | 12 and 16 m2, door 0.90 m | 12.0 and 16.0 m2, door 0.88-0.89 m |
-| Furniture in the room | 20.00 m2 | within 3% |
-| Missing ceiling | ceiling unknown | `null`, flagged |
-| Two noisy captures of one room | agree within 1 cm or 0.5% per wall | passes |
-| Intervals | contain the true walls, area, ceiling | pass, and are not degenerate |
-
-Real data has no ground truth for the Cozmo samples, so the evidence there is
-consistency only.
-
-- Ceiling: three rooms of `single_scan_with_ceiling` come out at 3.076, 3.075 and 3.063 m,
-  three lower rooms at 2.42, 2.35 and 2.28 m, each with an interval of about +/-2 cm.
-- Repeatability across two walks of the same flat, `scripts/cross_scan_repeatability.py`:
-  the wall maps align (75% overlap) and every one of six rooms matches exactly one room in
-  the other capture (overlap 0.71-0.90). The largest room agrees to 0.3% in area. **Other
-  rooms differ by 4-27% in area, and wall lengths differ by a median of 44 cm, so the
-  1 cm / 0.5% repeatability gate is not met on real scans.** Part of that is real (the
-  walks did not see the same things), so this comparison does not isolate the estimator.
-- Same walk, two frame subsets, `scripts/same_walk_repeatability.py` (coverage identical, so
-  only the estimator differs; `single_scan_with_ceiling`, six rooms match one to one). Room
-  areas agree within 1% for four rooms and 5% for the two smallest. Wall **lines** repeat well:
-  median position difference 0.3 cm, 76% within 1 cm. Wall **corners** (both neighbours
-  supported) move by a median 1.5 cm (46% within 1 cm, 64% within 3 cm). A wall end next to an
-  unsupported edge (a doorway or an unseen stretch) moves by a median 31 cm, and only 26% of
-  the walls that lie on the same line in both runs meet the 1 cm / 0.5% gate (median length
-  difference 9 cm, n = 19). So the wall length gate fails on segmentation and unsupported
-  ends, not on wall position. With the drift correction on, the same test gives a line position
-  difference of 1.8 cm and corners of 3.2 cm (median): each run estimates the drift separately and the
-  two estimates differ by a median 1.5 cm (up to 3.5 cm and 0.9 degrees) on drifts of 16 cm and 4
-  degrees, which the correction removes. Snapping wall directions to the room's dominant
-  direction was tried and moved corners only from 1.7 to 1.3 cm median, so it was not kept.
-  This measures the estimator, not the device: it is not a repeat capture and no tape truth
-  is involved.
-
-### Drift ablation (footprint with the correction on and off)
-
-The walk is drift-corrected by default and every run reports its own on/off footprint. `drift.py`
-recovers injected drift on synthetic walks (14 cm and 0.7 degrees down to under 2 cm,
-`tests/test_drift.py`). On the sample scans it finds chunks up to 16-22 cm and 2-4 degrees apart,
-and the registration disagreement (chi2) falls by 95%. The footprint moves little:
-
-| Scan | Footprint, drift off | on, prior 5 cm / 0.5 deg (default) | on, prior 2 cm / 0.2 deg |
-|---|---|---|---|
-| `single_scan_with_ceiling` | 58.4 m2, 6 rooms | 58.0 m2, 6 rooms (-0.7%) | 56.6 m2, 6 rooms (-3.0%) |
-| `single_scan_floor_only` | 52.3 m2, 6 rooms | 51.3 m2, 5 rooms (-1.9%) | 50.7 m2, 5 rooms (-3.0%) |
-
-Honest caveat: there is no tape truth for these scans, so this does not show that the
-correction is more accurate. Two different recordings of the same flat (`single_scan_with_ceiling`
-and `single_scan_floor_only`, `scripts/cross_scan_repeatability.py [--drift]`), off against on with
-prior 2 cm / 0.2 deg: 6 vs 5 matched rooms, mean IoU 0.77 vs 0.78, summed area difference 7.2 vs
-10.9 m2, median wall difference 44 vs 55 cm. With prior 5 cm one room grew by 56%. The recordings
-do not see the same things, so this is a weak test, but the correction did not improve it. It is on
-because the poses must not be taken as recorded when the walk is long, and the effect on the
-footprint is small either way; the step tolerances of the estimate are assumptions, not calibrated,
-and the default prior was fixed before this comparison, not tuned on it. A floor-only scan lost a
-room (6 to 5) with the correction on, which is the failure to watch.
+**Damage** (every tier, `assess.py`): per room each wall, the floor and the ceiling is unrolled into a flat colour patch
+(`surfaces.py`), damage is found (`damage.py`: class-agnostic proposals from colour, thin ridges and depth relief, classified
+by our own rules; classes are water stain, mould, structural crack, peeling paint, efflorescence, soot or fire, hole or impact,
+sagging or bulging, other), then `room.damage`, `room.concealed_flags` (`concealed.py`) and `room.scope` (`scope.py`) are filled,
+all with intervals.
 
 ## Known limitations
 
-- Windows are not detected at the LiDAR tier (glass, partial-height gaps); only
-  floor-level doorway gaps are. A closed door leaf hides its doorway.
-- Wall length is corner to corner on the fitted lines; a wardrobe against a wall is
-  measured to its face.
-- Rooms are outlines of visited free space. Spaces that open onto the room through a gap
-  wider than 1.1 m (open plan, or a real doorway that wide) are merged with it.
-- The systematic terms of the intervals (pose drift, plane offset) are assumptions in
-  `uncertainty.py`, to be calibrated against tape measurements.
-- Drift is corrected in blocks of walk chunks, which can leave small steps at chunk boundaries; a smooth
-  pose-level correction was not finished. Whether the correction improves accuracy is untested without tape truth.
-- Rooms placed by doorways assume a 0.15 m wall between them; a wrong thickness shifts each
-  hung room by the difference. Two doorways of equal width whose rooms fit either way are
-  flagged `placement_ambiguous`. Rooms with no visible doorway (a closed door leaf, or a few
-  photos) cannot be placed and are listed in `stitching.unplaced`.
+- Windows are not detected at the LiDAR tier (glass, partial-height gaps); only floor-level doorway gaps are. A closed door
+  leaf hides its doorway.
+- Wall length is corner to corner on the fitted lines; a wardrobe against a wall is measured to its face.
+- Rooms are outlines of visited free space. Spaces that open onto the room through a gap wider than 1.1 m are merged with it.
+- The systematic terms of the intervals (pose drift, plane offset) are assumptions in `uncertainty.py`, not yet calibrated
+  against tape (only four rooms have tape truth).
+- Drift is corrected in blocks of walk chunks, which can leave small steps at chunk boundaries. Whether the correction
+  improves accuracy is untested without tape truth.
+- Rooms placed by doorways assume a 0.15 m wall between them. Two doorways of equal width that fit either way are flagged
+  `placement_ambiguous`. A room with no visible doorway cannot be placed (`stitching.unplaced`).
+- Video walls still come out partly as fragments and the openings gate is not met; the video result changes between runs.
+- Photo areas are null where some walls are never seen from the one spot; unseen walls get no length.
+- Damage: hairline cracks (1-2 mm) are missed; door hardware, sockets, window bars, grain and glare still give false
+  regions. On real LiDAR scans every reported region is a false positive: `CozmoData/` has no damage.
 
-## Damage
+## Tests
 
-`assess.py` is the step every tier shares: per room it unrolls each wall, the floor and the ceiling into a flat colour
-patch (`surfaces.py`: posed RGB frames projected onto the surface, depth used to leave out furniture and to measure
-relief), finds damage (`damage.py`), and fills `room.damage` (class, surface, centre, width, height, length, area, all
-with intervals), `room.concealed_flags` (`concealed.py`: named rules, e.g. a stain under a ceiling stain, mould, a long
-crack) and `room.scope` (`scope.py`: one line per damage region keyed to its surface, plus an opening-up line where a
-flag fired). The LiDAR tier calls it from `run_lidar` (`lidar_frames.py` supplies sharp RGB frames with depth and undoes
-the drift correction); `debug/damage/<surface>.png` shows what was judged.
-
-- Classes (our own definition; the brief names none): water stain, mould, structural crack, peeling paint,
-  efflorescence, soot or fire, hole or impact, sagging or bulging, other. Proposals are class-agnostic (colour against the
-  surface's local median, thin dark ridges, depth relief), then classified by feature rules.
-- Checked on synthetic painted rooms (known place and size, each class, shadows, furniture, a door beside a stain, tilted
-  planes) and end to end on a synthetic LiDAR scan. Not checked on real LiDAR damage: none exists in `CozmoData/`.
-- On real patches from the video tier (`scripts/eval_damage_patches.py`) the staged leakage mark is found with the right
-  class (22 x 16 cm against a tape 21 x 25 cm), but doors, hardware, sockets, window bars and glare still give false
-  regions. On `CozmoData/single_room` (no known damage) an earlier detector reported 47 false regions; it was then fixed
-  for tilted relief, dark fixtures, glare and door edges and not re-measured.
-- A pretrained CLIP classifier over the same proposals was tried and dropped: on the real patches it failed 7 of the
-  acceptance checks against 5 for the rules.
-
-## Video tier
-
-```
-uv run floorfathom plan Data/B2.MOV --out out/b2 --reference-length-cm 31.6
-```
-
-One clip is one room. `video_pipeline.py`: keyframes (`io_video.py`), poses and sparse points by
-SfM (`sfm.py`, pycolmap), a dense cloud from a depth model fitted to the SfM depths
-(`points_video.py`), gravity from the floor and ceiling planes (`world.py`), then the same estimator
-and leave-chunks-out intervals as the LiDAR tier. SfM has no scale. The scale comes from the
-protocol's yellow ruler (`anchor.py`): its two ends are triangulated in the first 15 s of the clip
-and its tape-measured length (`--reference-length-cm`, default 31.6, ours) gives metres per SfM unit
-with its own uncertainty. If the ruler is not found, is flagged (few frames, weak sideways
-movement, large residual) or is far from the depth model's scale, the depth model's scale is used,
-every interval carries at least 15% scale uncertainty and the room is flagged
-`scale_from_depth_model_only` with the reason.
-
-Numbers on the new ruler clips (`B2`, `B1`, `H1`, this laptop, tape values in `ground_truth.json`,
-scored with `scripts/eval_video.py`):
-
-| | `B2` | `B1` | `H1` (Hall) |
-|---|---|---|---|
-| keyframes with a pose | 100% | 100% | 100% |
-| scale method | ruler, +-0.6% | ruler, +-0.4% | ruler |
-| walls within 3% of the tape | 0/4 | 0/4 | 0/4 |
-| ceiling | not observed | not observed | 2.74 m [2.60, 2.88] against 2.79 (-1.9%) |
-| openings within 2 cm | 0/1 (found 91 cm, tape 81) | 0/1 (missed) | 0/4 (all missed) |
-| run time, cold (0.2 s keyframes) | 19 min (tests ran alongside) | 14.6 min | 13.6 min |
-
-What this shows and does not show:
-
-- The ruler scale is 0.62-0.65 of the depth model's on these clips. The only independent check is
-  the `H1` ceiling, which the scale estimate never sees: 2.74 m against 2.79 m by tape. The depth
-  model's scale would have given about 4.5 m, and the old `H2` clip (depth scale only) gave 4.68 m.
-  One clip is one data point; `B2` and `B1` had no ceiling to check.
-- The wall and opening gates are still not met, but the room estimator no longer breaks on the glossy floor. Three
-  video-only inputs were added to the shared estimator, each off by default so the LiDAR and photo tiers are unchanged:
-  camera-ray free space (`video_rays.py`), wall lines fitted to the whole cloud that cut off what lies behind a wall
-  (`video_walls.py`) and floor and ceiling re-centred on their point plateau (`video_heights.py`). On `H1`, from the same
-  cached SfM and depth (`scripts/eval_video_estimator.py`), the room went from 19.3 m2 in 38 edges to 22.0 m2 in 13 edges,
-  the balcony seen through glass is cut off, the ceiling error went from +11.9 cm to +6.5 cm (tape inside the interval),
-  and one wall reached -6%; the other three walls are still fragments and the openings are 0 of 4. On `B1` the same
-  change gave 5.66 m2 in 4 edges (tape 6.12). Depth-model walls bow and kink by several centimetres, which no polygon
-  step removes; the +-3% gate needs a better geometry, not a better outline.
-- Repeatability of `H1` against `H2` was not scored: `H2` was not run on the ruler clips.
-- Without a ruler in view the depth model gave scale errors of -1%, +7% and +67% on the earlier
-  clips, so the fallback cannot meet the +-3% gate.
-- One clip is one room. A folder of clips gives one stitched plan (`stitch.py` glues the rooms by their
-  doorways; a clip with no room is listed in the notes, an unplaceable room stays in its own frame).
-  Tested on canned per-room plans only. On the real plans of `H1`, `B1` and `B2`, only `B2` was placed:
-  it was the only room with a detected doorway, so `H1` and `B1` had nothing to glue and were reported
-  unplaced. Doorway detection is what limits video stitching.
+`uv run pytest` runs 245 tests in about 6 minutes on synthetic captures with known geometry (`tests/synth.py`), ray-cast
+into depth frames or rendered into stills and written in the real file layouts. They need no capture data, and no network
+once `fetch-models` has run (a few tests load the real depth model). `floorfathom schema > schema/capture_plan.schema.json` regenerates the schema after changing
+`schema.py` (a test checks they match).
 
 ## Layout
 
-`src/floorfathom/` the package, `tests/` synthetic-capture tests, `scripts/` analyses,
-`schema/` the published JSON Schema, `capture_protocol.md` and `edge_cases.md` the
-capture docs, `ground_truth.json` tape measurements of the flat captured in `Data/`.
+`src/floorfathom/` the package, `tests/` synthetic-capture tests, `scripts/` analyses and evaluation tools, `schema/` the
+published JSON Schema, `capture_protocol.md` and `edge_cases.md` the capture docs, `ground_truth.json` tape measurements of
+the flat captured in `Data/`, `docs/` design notes and `verification_notes.md`, `Deliverables/` the case-study documents.
+Git-ignored and not in a clone: `Data/` (iPhone 16 captures), `CozmoData/` (Cozmo LiDAR samples), `models/` (depth model),
+`out/` (outputs). `CLAUDE.md` holds the per-tier commands, timings and limits as the team keeps them.
