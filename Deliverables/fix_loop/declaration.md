@@ -1,6 +1,6 @@
 # Fix Loop Declaration — Video Tier
 
-*Shipped fix. Before and after runs are regenerable (commands below); the readable diff is one commit.*
+*Shipped fix. Before and after runs are regenerable (commands below); the readable diff is the three-file diff below.*
 
 ## 1. Worst-performing gate
 
@@ -72,20 +72,20 @@ is a capture-coverage and depth-cloud-quality limit, not the floor bug this fix 
 
 ```bash
 # BEFORE (video files at the commit before the floor fix)
-git checkout a0056a2^ -- src/floorfathom/video_heights.py src/floorfathom/video_pipeline.py
+git checkout 7055a33^ -- src/floorfathom/video_heights.py src/floorfathom/video_pipeline.py
 uv run floorfathom plan Data/H1.MOV --out out/fix_loop_before --reference-length-cm 31.6
 
 # AFTER (the floor fix)
-git checkout a0056a2 -- src/floorfathom/video_heights.py src/floorfathom/video_pipeline.py
+git checkout 7055a33 -- src/floorfathom/video_heights.py src/floorfathom/video_pipeline.py
 uv run floorfathom plan Data/H1.MOV --out out/fix_loop_after  --reference-length-cm 31.6
 ```
 
 Openings: `plan.json` → `len(rooms[0].openings)` (before 1, after 6).
 Floor: `work/alignment.json` → `floor_y` (before ≈ −4.0, after ≈ −2.48).
 
-**Readable diff (the whole fix is one commit):**
+**Readable diff (the fix is 3 files, +106/-2 lines, inside commit `7055a33`, which also holds photo-tier changes):**
 ```bash
-git show a0056a2 -- src/floorfathom/video_heights.py src/floorfathom/video_pipeline.py tests/test_video_heights.py
+git diff 7055a33^ 7055a33 -- src/floorfathom/video_heights.py src/floorfathom/video_pipeline.py tests/test_video_heights.py
 ```
 
-*Status: fix shipped (commit `a0056a2`), before/after captured, diff is one commit. 43 video-tier tests pass.*
+*Status: fix shipped (commit `7055a33`). The before and after numbers above were captured by the video session; `out/fix_loop_before` and `out/fix_loop_after` are not in the repository (`out/` is git-ignored), so regenerate them with the commands above (about 13 min per run). 43 video-tier tests pass, as reported by the video session.*
