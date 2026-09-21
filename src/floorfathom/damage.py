@@ -30,11 +30,24 @@ RULES = {
     "refine_alt": (0.35, 0.65),  # the cuts that give the extent its interval
     "refine_grow": 0.03,  # m a region may grow when cut at its own fraction
     "lighting_edge_cm": 8.0,  # a colourless change with edges softer than this is lighting
-    "min_area": 0.0015,  # m2: smaller colour blobs are ignored
+    "min_area": 0.004,  # m2: smaller colour blobs are ignored (the staged damage is 200-500 cm2)
+    "object_bump": 0.02,  # m: a colour region standing out this far from the plane is an object on the wall
+    "salt_max_height": 1.0,  # m: efflorescence is a low-wall deposit; higher up, a bright patch is glare
+    "bg_window": 1.2,  # m: the surface is judged against its own median this far around, so doors and tiles do not skew it
+    "bg_cell": 0.04,  # m, resolution of that median
+    "ring_spread": 8.0,  # lightness spread (p75 - p25) of the band around a region: more means half its surround is another material
+    "min_solidity": 0.5,  # ragged fragments of a boundary are not damage
     "core_margin": 0.10,  # m: skirting, cornices and edge misregistration are not judged
     "sigma_smooth": (0.008, 0.03),  # m, blur of the blob route: fine, and coarse for speckled clusters
     "noise_floor": (1.2, 0.8, 0.8),  # smallest noise assumed per Lab channel
-    "crack_min_length": 0.05,
+    "crack_min_length": 0.08,
+    "crack_min_contrast": 8.0,  # lightness below the surface: fainter ridges are texture, not cracks
+    "max_area_stain": 1.0,  # m2: a stain, soot or mould can be this large ...
+    "max_area_other": 0.25,  # ... anything else this large is an object or a panel, not damage
+    "max_share": 0.35,  # of the surface's judged area: larger than this is a different surface, not damage
+    "rect_fill": 0.88,  # a region this rectangular and axis-aligned is a door, panel or screen (an ellipse fills 0.79)
+    "rect_axis_deg": 3.0,
+    "rect_min_side": 0.08,
     "crack_max_breadth": 0.02,
     "crack_ridge_z": 5.0,
     "joint_straight": 0.006,  # m rms off a straight line ...
@@ -75,7 +88,7 @@ def _poly_features(rows: np.ndarray, cols: np.ndarray, hh: float, ww: float) -> 
 
 
 def _background(lab: np.ndarray, valid: np.ndarray, mpp: float) -> np.ndarray | None:
-    """Robust quadratic per Lab channel over the valid pixels: the surface as if undamaged."""
+    """Robust quadratic per channel (Lab colour, or relief) over the valid pixels: the surface as if undamaged."""
     h, w = valid.shape
     step = max(1, round(0.02 / mpp))
     hh, ww = h // step, w // step
@@ -86,14 +99,14 @@ def _background(lab: np.ndarray, valid: np.ndarray, mpp: float) -> np.ndarray | 
     ok = cnt >= 0.5 * step * step
     if ok.sum() < 200:
         return None
-    cs = (lab[: hh * step, : ww * step] * v[..., None]).reshape(hh, step, ww, step, 3).sum((1, 3))
+    cs = (lab[: hh * step, : ww * step] * v[..., None]).reshape(hh, step, ww, step, lab.shape[-1]).sum((1, 3))
     cm = cs / np.maximum(cnt, 1)[..., None]
     rr, cc = np.mgrid[0:hh, 0:ww]
     a_all = _poly_features(rr, cc, hh - 1, ww - 1)[ok]
     bg = np.empty_like(lab)
     frr, fcc = np.mgrid[0:h, 0:w]
     a_full = _poly_features(frr / step, fcc / step, hh - 1, ww - 1)
-    for c in range(3):
+    for c in range(lab.shape[-1]):
         y = cm[..., c][ok]
         keep = np.ones(len(y), bool)
         for _ in range(5):
@@ -104,6 +117,33 @@ def _background(lab: np.ndarray, valid: np.ndarray, mpp: float) -> np.ndarray | 
             if keep.sum() < 100:
                 break
         bg[..., c] = a_full @ coef
+    return bg
+
+
+def _local_background(lab: np.ndarray, valid: np.ndarray, mpp: float) -> np.ndarray | None:
+    """Median of each Lab channel over a window of RULES["bg_window"] around every point: what the surface looks like
+    nearby. A door, a mirror or a tiled splashback then sets its own background instead of skewing a global model, and
+    a mark smaller than half the window does not move the median."""
+    h, w = valid.shape
+    step = max(1, round(RULES["bg_cell"] / mpp))
+    hh, ww = h // step, w // step
+    if hh < 4 or ww < 4:
+        return None
+    v = valid[: hh * step, : ww * step].astype(np.float32)
+    cnt = v.reshape(hh, step, ww, step).sum((1, 3))
+    ok = cnt >= 0.5 * step * step
+    if ok.sum() < 100:
+        return None
+    cs = (lab[: hh * step, : ww * step] * v[..., None]).reshape(hh, step, ww, step, 3).sum((1, 3))
+    cm = cs / np.maximum(cnt, 1)[..., None]
+    near = ndi.distance_transform_edt(~ok, return_indices=True)[1]  # unseen cells take their nearest seen neighbour
+    cm = cm[near[0], near[1]]
+    size = max(3, int(round(RULES["bg_window"] / RULES["bg_cell"])) | 1)
+    coarse = np.stack([ndi.median_filter(cm[..., c], size=size, mode="nearest") for c in range(3)], axis=-1)
+    full = cv2.resize(coarse.astype(np.float32), (ww * step, hh * step), interpolation=cv2.INTER_LINEAR)
+    bg = np.empty_like(lab)
+    bg[:] = full[-1, -1]
+    bg[: hh * step, : ww * step] = full
     return bg
 
 
@@ -131,9 +171,9 @@ def _extent(mask: np.ndarray, mpp: float) -> tuple[float, float, float, float, l
     return width, height, length, mask.sum() * mpp * mpp, [(float(x), float(y)) for x, y in approx]
 
 
-def _interval(base: float, alts: list[float], mpp: float) -> tuple[float, float, float]:
+def _interval(base: float, alts: list[float], mpp: float, scale_rel: float) -> tuple[float, float, float]:
     lo, hi = min([base] + alts), max([base] + alts)
-    rel = RULES["scale_rel_sigma"] * 1.96
+    rel = scale_rel * 1.96
     return base, max(0.0, lo * (1 - rel) - mpp), hi * (1 + rel) + mpp
 
 
@@ -187,6 +227,37 @@ def _classify(f: dict) -> tuple[str, float, str]:
 def _is_lighting(f: dict) -> bool:
     """A soft, colourless change of lightness is a shadow or a light patch on the surface, not damage."""
     return f["edge_cm"] >= RULES["lighting_edge_cm"] and abs(f["dL"]) < 12 and max(abs(f["da"]), abs(f["db"])) < 2.5
+
+
+def _is_object(mk: np.ndarray, f: dict, cls: str, mpp: float, core: np.ndarray) -> bool:
+    """Doors, wardrobes, screens, lamps and panels sit on or against a wall and are not damage."""
+    cap = RULES["max_area_stain"] if cls in ("water_stain", "soot_or_fire", "mould") else RULES["max_area_other"]
+    if f["area"] > cap or mk.sum() > RULES["max_share"] * core.sum():
+        return True
+    pts = np.stack(np.nonzero(mk)[::-1], axis=1).astype(np.float32)
+    (_c, (rw, rh), ang) = cv2.minAreaRect(pts)
+    if min(rw, rh) * mpp < RULES["rect_min_side"] or rw * rh == 0:
+        return False
+    axis = min(ang % 90, 90 - ang % 90)
+    return bool(mk.sum() / (rw * rh) >= RULES["rect_fill"] and axis <= RULES["rect_axis_deg"])
+
+
+def _surround_mixed(mk: np.ndarray, lab_l: np.ndarray, valid: np.ndarray, mpp: float) -> bool:
+    """True if the band 3-9 cm around a region is not one uniform material (a door edge, a frame, a grained door)."""
+    r, r0 = max(2, round(0.09 / mpp)), max(1, round(0.03 / mpp))  # the mark's own soft edge is inside 3 cm
+    band = cv2.dilate(mk.astype(np.uint8), np.ones((2 * r + 1,) * 2, np.uint8)).astype(bool)
+    band &= ~cv2.dilate(mk.astype(np.uint8), np.ones((2 * r0 + 1,) * 2, np.uint8)).astype(bool)
+    band &= valid
+    if band.sum() < 30:
+        return False
+    lo, hi = np.percentile(lab_l[band], [25, 75])
+    return bool(hi - lo > RULES["ring_spread"])
+
+
+def _on_boundary(mk: np.ndarray, lab_l: np.ndarray, valid: np.ndarray, mpp: float, f: dict) -> bool:
+    """A ragged region, or one whose surround is not a single material, is a piece of a boundary; a mark on paint has
+    paint all round it."""
+    return f["solidity"] < RULES["min_solidity"] or _surround_mixed(mk, lab_l, valid, mpp)
 
 
 def _blob_features(mask, lab, bg, lsm, mpp) -> dict:
@@ -284,10 +355,17 @@ def _zmaps(lab: np.ndarray, bg: np.ndarray, valid: np.ndarray, core: np.ndarray,
     return out
 
 
-def _relief_regions(patch: Patch, valid: np.ndarray, core: np.ndarray, mpp: float) -> list[tuple[np.ndarray, str, str]]:
+def _relief_smooth(patch: Patch, valid: np.ndarray, mpp: float) -> tuple[np.ndarray, np.ndarray]:
+    """Relief with the plane fit's own tilt and bow removed, smoothed; and where it is known."""
     rel = np.where(np.isfinite(patch.relief), patch.relief, 0.0).astype(np.float32)
     rv = np.isfinite(patch.relief) & valid
-    rs = _smooth(rel, rv, 0.02 / mpp)
+    trend = _background(rel[..., None], rv, mpp)  # the plan's plane is only fitted: tilt and bow of the wall are not damage
+    if trend is not None:
+        rel = rel - trend[..., 0]
+    return _smooth(rel, rv, 0.02 / mpp), rv
+
+
+def _relief_regions(rs: np.ndarray, rv: np.ndarray, core: np.ndarray, mpp: float) -> list[tuple[np.ndarray, str, str]]:
     out = []
     for sign in (-1, 1):
         lab_r, nr = ndi.label(_clean((sign * rs > RULES["relief_min"]) & core & rv, mpp))
@@ -302,7 +380,22 @@ def _relief_regions(patch: Patch, valid: np.ndarray, core: np.ndarray, mpp: floa
     return out
 
 
-def detect(patch: Patch) -> list[Found]:
+def _plausible(cls: str, kind: str, h: float) -> bool:
+    """Where a class can be told from lighting or fixtures: bright deposits are low-wall salts, never glare on a floor or ceiling."""
+    if cls == "efflorescence":
+        return kind == "wall" and h <= RULES["salt_max_height"]
+    if kind == "floor":
+        return cls in ("water_stain", "mould", "structural_crack", "hole_or_impact", "other_anomaly")
+    return True
+
+
+def detect(patch: Patch, scale_rel_sigma: float | None = None, report_unclassified: bool = True) -> list[Found]:
+    """Damage regions of one patch. ``scale_rel_sigma`` is the patch scale's relative error (default: RULES).
+
+    ``report_unclassified=False`` drops regions that fit no class: use it where nothing but colour says what is an
+    object (no depth to mask furniture), so that only regions that look like a known kind of damage are reported.
+    """
+    rel = RULES["scale_rel_sigma"] if scale_rel_sigma is None else scale_rel_sigma
     mpp = patch.m_per_px
     lab = cv2.cvtColor(np.clip(patch.rgb.astype(np.float32), 0, 1), cv2.COLOR_RGB2Lab)
     valid = patch.valid.astype(bool)
@@ -310,7 +403,7 @@ def detect(patch: Patch) -> list[Found]:
     core = cv2.erode(valid.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_RECT, (2 * r + 1, 2 * r + 1)),
                      borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(bool)
     found: list[Found] = []
-    bg = _background(lab, valid, mpp)
+    bg = _local_background(lab, valid, mpp)
     if bg is None or core.sum() < 200:
         return found
     lsm = _smooth(lab[..., 0], valid, RULES["sigma_smooth"][0] / mpp)
@@ -319,10 +412,17 @@ def detect(patch: Patch) -> list[Found]:
     def taken(mk: np.ndarray, share: float) -> bool:
         return any((mk & c).sum() >= share * mk.sum() for c in claimed)
 
+    bump = rv = None
     if patch.relief is not None:
-        for mk, cls, ev in _relief_regions(patch, valid, core, mpp):
-            found.append(_make(mk, cls, 0.6, ev, [], mpp))
+        bump, rv = _relief_smooth(patch, valid, mpp)
+        for mk, cls, ev in _relief_regions(bump, rv, core, mpp):
+            found.append(_make(mk, cls, 0.6, ev, [], mpp, rel))
             claimed.append(mk)
+
+    def protrudes(mk: np.ndarray) -> bool:
+        known = mk & rv if rv is not None else mk
+        return bump is not None and known.any() and float(np.median(bump[known])) > RULES["object_bump"]
+
     thr = RULES["z_threshold"]
     for zs in _zmaps(lab, bg, valid, core, mpp):
         labels, n = ndi.label(_clean((zs > thr) & core, mpp))
@@ -335,33 +435,42 @@ def detect(patch: Patch) -> list[Found]:
             claimed.append(mk)
             alts = [m for m in (_refine(seed, zs, fr, mpp, core) for fr in RULES["refine_alt"]) if m is not None]
             f = _blob_features(mk, lab, bg, lsm, mpp)
-            if _is_lighting(f):
+            if _is_lighting(f) or protrudes(mk):
                 continue
             _w, _h, ln, ar, _o = _extent(mk, mpp)
             breadth = ar / max(ln, mpp)
             if ln >= RULES["crack_min_length"] and breadth <= 0.05 and ln >= 5 * breadth and f["db"] < 4:  # a line, not a blob
                 if _is_joint(*_line_stats(mk, mpp)):
                     continue
-                cls = "structural_crack" if f["dL"] <= -4 else "other_anomaly"
+                if f["dL"] > -RULES["crack_min_contrast"] or _surround_mixed(mk, lab[..., 0], valid, mpp):
+                    continue  # too faint to be a crack, or lying on a door or frame; a light line is not damage we classify
                 ev = f"thin dark line, {ln * 100:.0f} cm long, {breadth * 100:.1f} cm wide, dL {f['dL']:+.0f}"
-                found.append(_make(mk, cls, 0.6 if cls == "structural_crack" else 0.3, ev, alts, mpp))
+                found.append(_make(mk, "structural_crack", 0.6, ev, alts, mpp, rel))
                 continue
             cls, conf, ev = _classify(f)
+            if _on_boundary(mk, lab[..., 0], valid, mpp, f):
+                continue
+            if _is_object(mk, f, cls, mpp, core) or (cls == "other_anomaly" and not report_unclassified):
+                continue
+            if not _plausible(cls, patch.kind, (np.nonzero(mk)[0].mean() + 0.5) * mpp):
+                continue
             ring = cv2.dilate(mk.astype(np.uint8), np.ones((2 * r + 1, 2 * r + 1), np.uint8)).astype(bool) & ~mk
             if ring.any() and (~valid[ring]).mean() > 0.3:
                 conf *= 0.7
                 ev += "; touches an unobserved area, extent may be cut"
-            found.append(_make(mk, cls, conf, ev, alts, mpp))
+            found.append(_make(mk, cls, conf, ev, alts, mpp, rel))
     for mk in _cracks(lab[..., 0], core, mpp):
         if taken(mk, 0.5):
             continue
         contrast = float(np.median(lab[..., 0][core]) - lab[..., 0][mk].mean())
-        found.append(_make(mk, "structural_crack", 0.6, f"thin dark ridge, lightness {contrast:.0f} below the surface", [], mpp))
+        if contrast < RULES["crack_min_contrast"] or _surround_mixed(mk, lab[..., 0], valid, mpp):
+            continue
+        found.append(_make(mk, "structural_crack", 0.6, f"thin dark ridge, lightness {contrast:.0f} below the surface", [], mpp, rel))
     found.sort(key=lambda f: (np.nonzero(f.mask)[0].min(), np.nonzero(f.mask)[1].min()))
     return found
 
 
-def _make(mask: np.ndarray, cls: str, conf: float, ev: str, alt_masks: list[np.ndarray], mpp: float) -> Found:
+def _make(mask: np.ndarray, cls: str, conf: float, ev: str, alt_masks: list[np.ndarray], mpp: float, rel: float) -> Found:
     w, h, ln, ar, outline = _extent(mask, mpp)
     alts = [_extent(m, mpp)[:4] for m in alt_masks]
     return Found(
@@ -369,9 +478,9 @@ def _make(mask: np.ndarray, cls: str, conf: float, ev: str, alt_masks: list[np.n
         damage_class=cls,
         confidence=float(conf),
         evidence=ev,
-        width=_interval(w, [a[0] for a in alts], mpp),
-        height=_interval(h, [a[1] for a in alts], mpp),
-        length=_interval(ln, [a[2] for a in alts], mpp),
-        area=_interval(ar, [a[3] for a in alts], mpp * ln),
+        width=_interval(w, [a[0] for a in alts], mpp, rel),
+        height=_interval(h, [a[1] for a in alts], mpp, rel),
+        length=_interval(ln, [a[2] for a in alts], mpp, rel),
+        area=_interval(ar, [a[3] for a in alts], mpp * ln, rel),
         outline=outline,
     )

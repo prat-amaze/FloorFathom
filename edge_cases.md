@@ -89,8 +89,9 @@ Seen in our clips:
   room. An object carried in a hand or a box moves with the camera and gives no parallax,
   and a turn on the spot gives none either. Baselines under 5 degrees are flagged
   (`anchor_weak_baseline`); on a weak-baseline test the resampling error alone said 12.8%
-  where the real error was 29%, so a pixel-noise term was added. The strip is not yet part
-  of the capture protocol.
+  where the real error was 29%, so a pixel-noise term was added. The capture protocol now
+  asks for a yellow 30 cm ruler on a wooden surface at the start of each clip; a clear or
+  white ruler is not found, and a light door frame can be mistaken for a white strip.
 - **Registration varies a lot by clip:** keyframes with a pose in the kept model were
   `B2` 77%, `B1` 66%, `H1` 45%, `BR` 46% and `IMG_4765` 100%. Below 60% the pipeline
   gives no rooms and a reason (`sfm_registered_too_few_frames`), so two of the five
@@ -153,7 +154,10 @@ Expected from how the method works, not yet seen in our data:
   scale error goes straight into every length (measured above, not the 3-8% first hoped).
 - **Run-to-run differences:** COLMAP mapping is multithreaded, so identical input may not
   give an identical model, which the README's same-input-same-JSON promise would need.
-  The repeatability check on `H1` against `H2` has not been run yet.
+  The `H1` against `H2` repeatability check could not be scored: `H1` registers 45% of its
+  keyframes and gives no room, and `H2` gives one room (31.85 m2 against a tape-measured
+  hall of about 5.3 x 4.7 m, ceiling 4.68 m against 2.79 m, 3 of 4 tape walls collapsed to
+  under 2 m, 0 of 5 doors within 2 cm).
 - **Windows are not told from doors:** the schema has one opening kind, `doorway`, so a
   window such as `B2`'s (110 x 240 cm) is either missed or reported as a doorway.
 - **Several clips in one folder:** the video tier takes one clip per run, and stitching

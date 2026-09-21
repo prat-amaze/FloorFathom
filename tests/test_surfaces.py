@@ -120,8 +120,8 @@ def stained_frames():
 def test_the_stain_lands_on_its_wall_with_its_size_and_nothing_else_is_reported(stained_frames, monkeypatch):
     res = _detect_all(stained_frames, monkeypatch)
     assert set(res) == {"r0_w0", "r0_w1", "r0_w2", "r0_w3", "room_0_ceiling", "room_0_floor"}
+    assert all(p.valid.mean() > 0.4 for p, _f in res.values()), {k: p.valid.mean() for k, (p, _f) in res.items()}  # every surface was really seen
     patch, found = res["r0_w0"]
-    assert patch.valid.mean() > 0.6
     stain = [f for f in found if f.damage_class == "water_stain"]
     assert len(stain) == 1
     rows, cols = np.nonzero(stain[0].mask)

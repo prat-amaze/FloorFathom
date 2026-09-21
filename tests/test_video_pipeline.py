@@ -69,6 +69,7 @@ def test_failed_reconstruction_gives_an_empty_plan_with_the_reason(tmp_path, mon
     assert plan.rooms == [] and plan.tier == "video" and "sfm_failed" in plan.diagnostics.notes
     again = CapturePlan.model_validate_json((tmp_path / "out" / "plan.json").read_text())  # valid to the schema
     assert again.capture == "room"
+    assert again.stitching is not None and again.stitching.footprint.value is None and again.stitching.links == []
 
 
 def test_too_few_registered_frames_gives_no_numbers(tmp_path, monkeypatch):
@@ -80,10 +81,89 @@ def test_too_few_registered_frames_gives_no_numbers(tmp_path, monkeypatch):
     assert "sfm_split_into_several_models" in plan.diagnostics.notes  # the reconstruction's own flags are kept
 
 
-def test_a_folder_of_several_clips_is_refused_for_now(tmp_path):
-    (tmp_path / "a.MOV").write_bytes(b"x")
-    (tmp_path / "b.MOV").write_bytes(b"x")
-    with pytest.raises(NotImplementedError):
+def _fake_clip_plans(monkeypatch, plans):
+    """run_clip replaced by canned per-clip plans, keyed by the clip's name."""
+    monkeypatch.setattr(vp, "run_clip", lambda clip, out, **k: plans[clip.stem])
+
+
+def _folder(tmp_path, names):
+    for n in names:
+        (tmp_path / f"{n}.MOV").write_bytes(b"x")
+    return tmp_path
+
+
+def test_a_folder_of_clips_gives_one_stitched_plan_with_unique_ids(tmp_path, monkeypatch):
+    from test_stitch import WALL, _box, _in_own_frame, _one_room_plan
+
+    hub = _box("hub", 0, 0, 6, 4, [("e", (6.0, 2.0), 0.9)]).model_copy(update={"frame": "room"})
+    east = _in_own_frame(_box("east", 6 + WALL, 0.5, 4, 3, [("d", (6 + WALL, 2.0), 0.9)]), 0.7, (5.0, -2.0))
+    _fake_clip_plans(monkeypatch, {"Hall": _one_room_plan(hub, "Hall"), "B1": _one_room_plan(east, "B1")})
+    plan = vp.run_video(_folder(tmp_path, ["Hall", "B1"]), tmp_path / "out")
+    assert plan.tier == "video" and plan.capture == tmp_path.name
+    assert sorted(r.id for r in plan.rooms) == ["room_0", "room_1"]
+    st = plan.stitching
+    assert st is not None and st.unplaced == [] and st.overlaps == []
+    assert {(ln.room, ln.other) for ln in st.links} == {("room_0", "room_1"), ("room_1", "room_0")}
+    assert CapturePlan.model_validate_json((tmp_path / "out" / "plan.json").read_text()) == plan
+    assert sorted(f.name for f in (tmp_path / "out" / "rooms").iterdir()) == ["B1.json", "Hall.json"]  # one file per clip, no folders
+
+
+def test_one_clip_gives_the_same_layout_with_a_stitching_of_its_one_room(tmp_path, monkeypatch):
+    from test_stitch import _box, _one_room_plan
+
+    seen = []
+
+    def fake(clip, out, work=None, debug_dir=None, **k):
+        seen.append((work, debug_dir))
+        debug_dir.mkdir(parents=True)
+        (debug_dir / "r0_w1.png").write_bytes(b"png")  # the clip's own picture of its wall
+        return _one_room_plan(_box("hub", 0, 0, 6, 4, []).model_copy(update={"frame": "room"}), "room")
+
+    monkeypatch.setattr(vp, "run_clip", fake)
+    out = tmp_path / "out"
+    plan = vp.run_video(_clip(tmp_path), out)
+    st = plan.stitching
+    assert st is not None and st.links == [] and st.footprint.value == pytest.approx(24.0, rel=0.05)
+    assert seen[0][0] == out / "work"  # caches stay where a rerun and the dev scripts look for them
+    assert (out / "plan.json").exists() and (out / "plan.png").exists() and (out / "rooms" / "room.json").exists()
+    assert (out / "debug" / "damage" / "r0_w1.png").exists() and not (out / "work" / "debug").exists()
+    assert CapturePlan.model_validate_json((out / "plan.json").read_text()) == plan
+
+
+def test_the_damage_pictures_of_a_folder_follow_the_renumbered_surfaces(tmp_path, monkeypatch):
+    from test_stitch import _box, _one_room_plan
+
+    def fake(clip, out, work=None, debug_dir=None, **k):
+        debug_dir.mkdir(parents=True)
+        (debug_dir / "r0_w1.png").write_bytes(b"png")
+        return _one_room_plan(_box(clip.stem, 0, 0, 6, 4, []).model_copy(update={"frame": "room"}), clip.stem)
+
+    monkeypatch.setattr(vp, "run_clip", fake)
+    out = tmp_path / "out"
+    vp.run_video(_folder(tmp_path, ["A", "B"]), out)
+    assert sorted(f.name for f in (out / "debug" / "damage").iterdir()) == ["r0_w1.png", "r1_w1.png"]  # no clip overwrites another
+    assert not any((out / "work" / c / "debug").exists() for c in ("A", "B"))
+
+
+def test_a_clip_without_a_room_is_listed_and_the_others_are_still_stitched(tmp_path, monkeypatch):
+    from test_stitch import _box, _one_room_plan
+
+    ok = _one_room_plan(_box("hub", 0, 0, 6, 4, []).model_copy(update={"frame": "room"}), "A")
+    empty = vp._no_plan("B", 1.0, 0, ["sfm_registered_too_few_frames"])
+    _fake_clip_plans(monkeypatch, {"A": ok, "B": empty})
+    plan = vp.run_video(_folder(tmp_path, ["A", "B"]), tmp_path / "out")
+    assert [r.id for r in plan.rooms] == ["room_0"]
+    assert any(n.startswith("B: no room") and "sfm_registered_too_few_frames" in n for n in plan.diagnostics.notes)
+
+
+def test_a_folder_where_no_clip_gave_a_room_says_so(tmp_path, monkeypatch):
+    _fake_clip_plans(monkeypatch, {n: vp._no_plan(n, 1.0, 0, ["sfm_failed"]) for n in ("A", "B")})
+    plan = vp.run_video(_folder(tmp_path, ["A", "B"]), tmp_path / "out")
+    assert plan.rooms == [] and "no_clip_gave_a_room" in plan.diagnostics.notes
+
+
+def test_a_folder_without_clips_is_an_error(tmp_path):
+    with pytest.raises(ValueError):
         vp.run_video(tmp_path, tmp_path / "out")
 
 
@@ -109,3 +189,70 @@ def test_a_failed_step_is_never_cached(tmp_path):
     cache = tmp_path / "x.pkl"
     assert vp._load_or_run(cache, "a", lambda: None) is None
     assert not cache.exists()
+
+
+def _anchor(scale, flags=(), rel=0.02):
+    from floorfathom.anchor import Anchor
+
+    return Anchor(length_sfm=0.2 / scale, scale=scale, rel_sigma=rel, n_frames=30, max_ray_angle_deg=20.0, residual_px=1.0, flags=list(flags))
+
+
+def _use_strip(monkeypatch, anchor, n_obs=30):
+    monkeypatch.setattr(vp, "track_strip", lambda *a, **k: [object()] * n_obs)
+    monkeypatch.setattr(vp, "estimate_anchor", lambda *a, **k: anchor)
+
+
+def test_strip_scale_is_used_when_found_and_plausible(monkeypatch):
+    _use_strip(monkeypatch, _anchor(0.45))
+    scale, rel, method, flags = vp._choose_scale(None, None, depth_scale=0.5, depth_rel=0.15)  # strip 10% under the depth model
+    assert (scale, method, flags) == (0.45, "reference_object", [])
+    assert rel == pytest.approx(float(np.hypot(0.02, vp.STRIP_LENGTH_REL)))  # far tighter than the depth model's 0.15
+
+
+def test_without_a_strip_the_depth_model_is_used_and_says_why(monkeypatch):
+    _use_strip(monkeypatch, None, n_obs=0)
+    assert vp._choose_scale(None, None, 0.5, 0.15) == (0.5, 0.15, "monocular_depth", ["reference_strip_not_found"])
+
+
+def test_a_flagged_strip_is_not_trusted(monkeypatch):
+    _use_strip(monkeypatch, _anchor(0.45, flags=["anchor_weak_baseline"]))
+    scale, rel, method, flags = vp._choose_scale(None, None, 0.5, 0.15)
+    assert (scale, method) == (0.5, "monocular_depth") and flags == ["reference_strip_rejected", "anchor_weak_baseline"]
+
+
+def test_a_strip_far_from_the_depth_model_is_taken_for_another_object(monkeypatch):
+    _use_strip(monkeypatch, _anchor(0.1))  # 5x smaller than the depth model: a door frame, not the strip
+    scale, _, method, flags = vp._choose_scale(None, None, 0.5, 0.15)
+    assert method == "monocular_depth" and scale == 0.5 and "reference_strip_implausible" in flags
+
+
+def test_the_measured_length_of_the_ruler_is_passed_on(monkeypatch):
+    seen = []
+    monkeypatch.setattr(vp, "track_strip", lambda *a, **k: [object()] * 30)
+    monkeypatch.setattr(vp, "estimate_anchor", lambda sfm, obs, length, **k: seen.append(length) or _anchor(0.45))
+    vp._choose_scale(None, None, 0.5, 0.15)
+    vp._choose_scale(None, None, 0.5, 0.15, reference_length_m=0.5)
+    assert seen == [vp.REFERENCE_LENGTH_M, 0.5]
+
+
+def test_the_alignment_file_maps_sfm_points_into_the_plan_frame(tmp_path):
+    import json
+
+    rot = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+    vp.write_alignment(tmp_path / "work" / "alignment.json", rot, 0.5, -1.2, (720, 1280))
+    a = json.loads((tmp_path / "work" / "alignment.json").read_text())
+    p = np.array([2.0, 3.0, 4.0])
+    q = (p @ np.array(a["rotation"]).T) * a["scale"]
+    assert q.tolist() == pytest.approx(((p @ rot.T) * 0.5).tolist()) and a["floor_y"] == -1.2 and a["image_size"] == [720, 1280]
+
+
+def test_the_keyframe_spacing_is_passed_on_and_keeps_caches_of_different_spacings_apart(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(vp, "extract_keyframes", lambda clip, out, step_s=0.15, **k: seen.append(step_s) or _keyframes(tmp_path))
+    stamps = []
+    monkeypatch.setattr(vp, "run_sfm", lambda *a, **k: None)
+    monkeypatch.setattr(vp, "_load_or_run", lambda cache, stamp, compute: stamps.append(stamp))
+    vp.run_clip(_clip(tmp_path), tmp_path / "a")
+    vp.run_clip(_clip(tmp_path), tmp_path / "b", keyframe_step_s=0.3)
+    assert seen == [vp.KEYFRAME_STEP_S, 0.3]
+    assert not stamps[0].endswith(":step0.3") and stamps[1].endswith(":step0.3") and stamps[0] != stamps[1]

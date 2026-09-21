@@ -61,6 +61,27 @@ def _lidar_stitching(raw, raw_traj, plan: CapturePlan, params: Params, drift, ab
     return describe(plan.rooms, [], [], text)
 
 
+def _lidar_damage(scan, traj, drift, plan: CapturePlan, debug_dir: Path | None = None) -> list[str]:
+    """Damage, concealed-damage flags and scope of every room, from the scan's own RGB and depth frames."""
+    from .assess import assess_room
+    from .lidar_frames import LidarFrames
+
+    floor_y = plan.diagnostics.floor_height_world
+    if floor_y is None:
+        return ["damage was not assessed: no floor plane was found"]
+    frames = LidarFrames(scan, traj, drift)
+    notes: list[str] = []
+    try:
+        for room in plan.rooms:
+            ch = room.ceiling_height.value
+            ceiling_y = None if ch is None else floor_y + ch
+            others = [r for r in plan.rooms if r is not room]
+            notes += [f"{room.id}: {n}" for n in assess_room(room, floor_y, ceiling_y, frames.for_room(room), others, debug_dir=debug_dir)]
+    finally:
+        frames.close()
+    return notes
+
+
 def run_lidar(
     capture: Path,
     out: Path,
@@ -72,11 +93,18 @@ def run_lidar(
     params: Params | None = None,
     correct_drift: bool = True,
     drift_ablation: bool = True,
+    assess_damage: bool = True,
 ) -> CapturePlan:
     t0 = time.perf_counter()
+    stages: dict[str, float] = {}
+
+    def lap(name: str) -> None:
+        stages[name] = time.perf_counter() - t0 - sum(stages.values())
+
     params = params or Params()
     scan = load_scan(capture)
     cloud = build_cloud(scan, target_frames=target_frames, n_chunks=n_chunks)
+    lap("cloud")
     traj = scan.positions[:, [0, 2]]
     raw, raw_traj, drift, why_not = cloud, traj, None, "switched off"
     floor = find_floor(cloud.points[:, 1]) if correct_drift else None
@@ -85,9 +113,12 @@ def run_lidar(
         cloud, traj = correct_points(cloud, drift), correct_trajectory(traj, drift)
     elif correct_drift:
         why_not = "no floor plane was found to anchor the drift estimate"
+    lap("drift")
     grid = make_grid(cloud.points, traj)
     ref = estimate(cloud.points, traj, params, grid=grid)
+    lap("estimate")
     samples = bootstrap(cloud, traj, ref, params, replicates=replicates, seed=seed)
+    lap("bootstrap")
     frames_used = min(len(scan), target_frames)
     sharp = None if ref.floor is None else ref.floor.sharpness
     plan = capture_plan(
@@ -104,8 +135,21 @@ def run_lidar(
         jackknife_scale(n_chunks, 2),
     )
     plan.stitching = _lidar_stitching(raw, raw_traj, plan, params, drift, drift_ablation, why_not)
+    lap("stitching")
+    if assess_damage:
+        plan.diagnostics.notes += _lidar_damage(scan, traj, drift, plan, out / "debug" / "damage" if debug else None)
+        plan.diagnostics.notes.append(
+            "Damage classes, concealed-damage rules and scope actions are our own definitions, tuned on synthetic surfaces; "
+            "no real damage was available to check them (README)."
+        )
+        lap("damage")
+    plan.diagnostics.seconds = time.perf_counter() - t0
+    plan.diagnostics.notes.append("Seconds per stage: " + ", ".join(f"{k} {v:.0f}" for k, v in stages.items()) + " (no caches are used).")
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.json").write_text(plan.model_dump_json(indent=2))
+    (out / "rooms").mkdir(exist_ok=True)
+    for room in plan.rooms:  # one CapturePlan per room, as the other tiers write
+        (out / "rooms" / f"{room.id}.json").write_text(plan.model_copy(update={"rooms": [room], "stitching": None}).model_dump_json(indent=2))
     render_plan(plan, out / "plan.png")
     if debug:
         from .debug import write_debug

@@ -38,6 +38,21 @@ def _label_outside(ax, p0, p1, text, centroid, colour=INK, size=7.5):
     ax.text(pos[0], pos[1], text, ha="center", va="center", fontsize=size, color=colour, rotation=ang, rotation_mode="anchor")
 
 
+DAMAGE = "#b91c1c"
+
+
+def _damage_position(room: RoomPlan, d) -> np.ndarray | None:
+    """Where a damage region sits on the plan: floor and ceiling regions are in plan coordinates, wall regions are
+    a distance along their wall."""
+    if d.surface.kind != "wall":
+        return np.array(d.centre)
+    w = next((w for w in room.walls if w.id == d.surface.id), None)
+    if w is None:
+        return None
+    a, b = np.array(w.start), np.array(w.end)
+    return a + (b - a) / max(np.linalg.norm(b - a), 1e-9) * d.centre[0]
+
+
 def draw_room(ax, room: RoomPlan, index: int) -> None:
     if not room.polygon:
         return
@@ -55,6 +70,10 @@ def draw_room(ax, room: RoomPlan, index: int) -> None:
     for o in room.openings:
         a, b = np.array(o.start), np.array(o.end)
         ax.plot([a[0], b[0]], [a[1], b[1]], "-", color=DOOR, lw=4.0, alpha=0.85, solid_capstyle="butt", zorder=4)
+    for d in room.damage:
+        pos = _damage_position(room, d)
+        if pos is not None:
+            ax.plot([pos[0]], [pos[1]], "X", color=DAMAGE, ms=8, mec="white", mew=0.8, zorder=6)
     area = "area n/a" if room.floor_area.value is None else f"{room.floor_area.value:.1f} m$^2$"
     ch = "ceiling n/a" if room.ceiling_height.value is None else f"ceiling {room.ceiling_height.value:.2f} m"
     ax.text(
@@ -84,6 +103,8 @@ def render_plan(plan: CapturePlan, path: str | Path) -> None:
         plt.Line2D([0], [0], color=MUTED, lw=1.4, ls="--", label="closure (no wall points)"),
         plt.Line2D([0], [0], color=DOOR, lw=4.0, label="doorway"),
     ]
+    if any(r.damage for r in plan.rooms):
+        handles.append(plt.Line2D([0], [0], marker="X", color="w", markerfacecolor=DAMAGE, ms=9, label="damage region"))
     ax.legend(handles=handles, loc="upper right", fontsize=8, frameon=False)
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)

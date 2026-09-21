@@ -25,7 +25,7 @@ from .schema import RoomPlan, SurfaceRef
 MPP = 0.005  # metres per patch pixel
 COS_MIN = 0.4  # views more oblique than about 66 degrees are not used
 Z_MIN, Z_MAX = 0.3, 5.0  # metres from the camera
-EDGE_JUMP = 0.08  # metres of depth change between neighbouring readings that marks an object outline
+EDGE_JUMP = (0.08, 0.05)  # depth change between neighbouring readings that marks an object outline: metres plus a share of the range
 DEPTH_TOL = (0.10, 0.05)  # accepted depth disagreement: at least 10 cm, or 5% of the range
 LATTICE = (9, 6)
 LUM_SPREAD = 0.06  # views of one point in a depth-free capture may differ this much in lightness (0..1)
@@ -119,16 +119,46 @@ def _depth_edges(frame: Frame) -> np.ndarray:
         d = frame.depth
         jump = np.zeros(d.shape, bool)
         for axis in (0, 1):
-            diff = np.abs(np.diff(d, axis=axis)) > EDGE_JUMP
+            a, b = np.moveaxis(d, axis, 0)[:-1], np.moveaxis(d, axis, 0)[1:]
+            big = np.moveaxis(np.abs(a - b) > EDGE_JUMP[0] + EDGE_JUMP[1] * np.minimum(a, b), 0, axis)  # a tilted plane changes with range
             lo = [slice(None)] * 2
             hi = [slice(None)] * 2
             lo[axis], hi[axis] = slice(0, -1), slice(1, None)
-            jump[tuple(lo)] |= diff
-            jump[tuple(hi)] |= diff
+            jump[tuple(lo)] |= big
+            jump[tuple(hi)] |= big
         jump |= d <= 0
         edges = cv2.dilate(jump.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
         frame._edges = edges
     return edges
+
+
+def lattice_of(plane: Plane) -> np.ndarray:
+    """A coarse grid of world points over the plane, to ask cheaply whether a frame looks at it."""
+    s_g, h_g = np.meshgrid(np.linspace(0.05, 0.95, LATTICE[0]), np.linspace(0.05, 0.95, LATTICE[1]))
+    return (
+        plane.origin[None, :]
+        + (s_g.ravel() * plane.size[0])[:, None] * plane.u[None, :]
+        + (h_g.ravel() * plane.size[1])[:, None] * plane.v[None, :]
+    ).astype(np.float32)
+
+
+def project(frame: Frame, pts: np.ndarray):
+    """Points of the plan's frame into ``frame``: (points in the pose's frame, camera position, z, u, v)."""
+    p = frame.undo(pts) if frame.undo is not None else pts
+    t = frame.pose[:3, 3].astype(np.float32)
+    x = (p - t) @ frame.pose[:3, :3].astype(np.float32)
+    z = x[:, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = frame.K[0, 0] * x[:, 0] / z + frame.K[0, 2]
+        v = frame.K[1, 1] * x[:, 1] / z + frame.K[1, 2]
+    return p, t, z, u, v
+
+
+def looks_at(lattice: np.ndarray, frame: Frame) -> bool:
+    """True if any lattice point is in front of the camera and inside the picture. Needs only pose, K and rgb's shape."""
+    _p, _t, z, u, v = project(frame, lattice)
+    h, w = frame.rgb.shape[:2]
+    return bool(((z > Z_MIN) & (z < Z_MAX) & (u >= 0) & (u < w) & (v >= 0) & (v < h)).any())
 
 
 class Accumulator:
@@ -155,33 +185,16 @@ class Accumulator:
         self.rel_w = np.zeros(n, np.float32)
         self.any_depth = False
         self.no_depth_views = 0
-        s_g, h_g = np.meshgrid(np.linspace(0.05, 0.95, LATTICE[0]), np.linspace(0.05, 0.95, LATTICE[1]))
-        self.lattice = (
-            plane.origin[None, :]
-            + (s_g.ravel() * plane.size[0])[:, None] * plane.u[None, :]
-            + (h_g.ravel() * plane.size[1])[:, None] * plane.v[None, :]
-        ).astype(np.float32)
-
-    def _project(self, frame: Frame, pts: np.ndarray):
-        p = frame.undo(pts) if frame.undo is not None else pts
-        t = frame.pose[:3, 3].astype(np.float32)
-        x = (p - t) @ frame.pose[:3, :3].astype(np.float32)
-        z = x[:, 2]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            u = frame.K[0, 0] * x[:, 0] / z + frame.K[0, 2]
-            v = frame.K[1, 1] * x[:, 1] / z + frame.K[1, 2]
-        return p, t, z, u, v
+        self.lattice = lattice_of(plane)
 
     def sees(self, frame: Frame) -> bool:
-        _p, t, z, u, v = self._project(frame, self.lattice)
-        h, w = frame.rgb.shape[:2]
-        return bool(((z > Z_MIN) & (z < Z_MAX) & (u >= 0) & (u < w) & (v >= 0) & (v < h)).any())
+        return looks_at(self.lattice, frame)
 
     def add(self, frame: Frame) -> int:
         """Project one frame onto the plane; returns how many pixels it contributed to."""
         if not self.sees(frame):
             return 0
-        p, t, z, u, v = self._project(frame, self.points)
+        p, t, z, u, v = project(frame, self.points)
         h, w = frame.rgb.shape[:2]
         ray = p - t
         dist = np.linalg.norm(ray, axis=1)

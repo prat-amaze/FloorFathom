@@ -106,11 +106,11 @@ def test_mould_soot_efflorescence_peeling_and_an_unnamed_class():
     _blend(img, _ellipse(0.9, 0.5, 0.22, 0.20), (0.35, 0.35, 0.36), alpha=0.6, soft=0.03)
     # efflorescence: light powdery speckle
     for _ in range(300):
-        x, y = rng.normal((2.7, 1.7), 0.05)
+        x, y = rng.normal((1.9, 0.6), 0.05)
         _blend(img, _ellipse(x, y, rng.uniform(0.003, 0.007), rng.uniform(0.003, 0.007)), (1.0, 1.0, 1.0), alpha=0.8, soft=0.002)
     # peeling paint: lighter irregular flakes with sharp edges
     for _ in range(12):
-        x, y = rng.normal((1.6, 0.45), 0.06)
+        x, y = rng.normal((1.4, 1.5), 0.06)
         poly = np.array([(x + rng.normal(0, 0.03) / MPP * MPP, y + rng.normal(0, 0.03)) for _ in range(5)])
         m = np.zeros((H, W), np.uint8)
         cv2.fillPoly(m, [np.round(poly / MPP).astype(np.int32)], 1)
@@ -123,7 +123,7 @@ def test_mould_soot_efflorescence_peeling_and_an_unnamed_class():
     assert _one(found, 1.9, 1.9, tol=0.1).damage_class == "mould"
     assert _one(found, 0.9, 0.5, tol=0.1).damage_class == "soot_or_fire"
     assert _one(found, 0.35, 1.0).damage_class == "other_anomaly"
-    assert _one(found, 2.7, 1.7, tol=0.12).damage_class in ("efflorescence", "peeling_paint")
+    assert _one(found, 1.9, 0.6, tol=0.12).damage_class in ("efflorescence", "peeling_paint")  # a low wall, so salts are possible
 
 
 def test_relief_pit_and_sag():
@@ -152,3 +152,65 @@ def test_too_little_valid_surface_gives_nothing():
     img, valid, _ = _wall()
     valid[:] = False
     assert detect(Patch(img, valid, MPP)) == []
+
+
+def test_objects_are_not_damage_but_a_large_stain_is():
+    img, valid, _ = _wall()
+    door = np.zeros((H, W), np.uint8)
+    door[60:400, 300:480] = 1  # a door leaf: 0.9 m wide, 1.7 m high, dark, sharp, axis-aligned
+    _blend(img, door.astype(bool), (0.45, 0.32, 0.20), alpha=1.0, soft=0.001)
+    small = np.zeros((H, W), np.uint8)
+    small[150:190, 200:270] = 1  # a light switch plate or a laptop: small, sharp, rectangular
+    _blend(img, small.astype(bool), (0.95, 0.95, 0.95), alpha=1.0, soft=0.001)
+    assert detect(Patch(img, valid, MPP)) == []
+    img, valid, _ = _wall()
+    _blend(img, _ellipse(1.6, 1.0, 0.45, 0.4), (0.72, 0.60, 0.40), alpha=0.55, soft=0.03)  # about 0.55 m2
+    assert [f.damage_class for f in detect(Patch(img, valid, MPP))] == ["water_stain"]
+
+
+def test_faint_ridges_are_texture_and_unclassified_regions_can_be_switched_off():
+    img, valid, rng = _wall()
+    m = np.zeros((H, W), np.uint8)
+    cv2.line(m, (100, 100), (160, 130), 1, 1)
+    _blend(img, m.astype(bool), (0.80, 0.78, 0.73), alpha=0.5)  # a barely darker scratch: lightness ~2 below
+    assert detect(Patch(img, valid, MPP)) == []
+    _blend(img, _ellipse(0.35, 1.0, 0.08, 0.06), (0.15, 0.30, 0.85), alpha=1.0, soft=0.002)
+    assert [f.damage_class for f in detect(Patch(img, valid, MPP))] == ["other_anomaly"]
+    assert detect(Patch(img, valid, MPP), report_unclassified=False) == []
+
+
+def test_tilt_and_bow_of_the_plane_are_not_relief_damage():
+    img, valid, _ = _wall()
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    relief = 0.06 * (xx / W - 0.5) * 2 + 0.05 * ((yy / H - 0.5) * 2) ** 2  # a tilted, bowed plane fit: up to 6 cm off
+    relief += np.random.default_rng(3).normal(0, 0.004, relief.shape).astype(np.float32)
+    assert detect(Patch(img, valid, MPP, relief=relief)) == []
+
+
+def test_a_protruding_fixture_glare_and_floor_brightness_are_not_damage():
+    img, valid, _ = _wall()
+    relief = np.zeros((H, W), np.float32)
+    blob = _ellipse(1.0, 1.0, 0.10, 0.12)
+    _blend(img, blob, (0.25, 0.25, 0.27), alpha=0.9, soft=0.004)  # a dark sink or tap
+    relief[blob] = 0.05  # standing 5 cm off the wall
+    assert detect(Patch(img, valid, MPP, relief=relief)) == []
+    img, valid, _ = _wall()
+    _blend(img, _ellipse(1.6, 1.8, 0.12, 0.10), (1.0, 1.0, 1.0), alpha=0.35, soft=0.01)  # glare high on a wall
+    high = detect(Patch(img, valid, MPP))
+    assert all(f.damage_class != "efflorescence" for f in high)
+    img, valid, _ = _wall()
+    _blend(img, _ellipse(1.6, 1.8, 0.12, 0.10), (1.0, 1.0, 1.0), alpha=0.35, soft=0.01)
+    assert all(f.damage_class != "efflorescence" for f in detect(Patch(img, valid, MPP, kind="floor")))
+
+
+def test_a_stain_on_paint_is_found_beside_a_large_door_of_another_material():
+    """A wall a fifth of which is a grained brown door: the stain must not be lost in the door's colour spread."""
+    img, valid, rng = _wall()
+    door = np.zeros((H, W), bool)
+    door[60:400, 300:480] = True
+    grain = cv2.GaussianBlur(rng.normal(0, 0.05, (1, W)).astype(np.float32), (0, 0), 2.0)  # vertical stripes
+    img[door] = (np.array([0.45, 0.32, 0.20]) * (1.0 + np.tile(grain, (H, 1))[..., None]))[door]
+    _blend(img, _ellipse(2.85, 1.0, 0.13, 0.15), (0.72, 0.60, 0.40), alpha=0.55, soft=0.02)
+    found = detect(Patch(img, valid, MPP))
+    assert [f.damage_class for f in found] == ["water_stain"], [(f.damage_class, f.evidence[:60]) for f in found]
+    assert _one(found, 2.85, 1.0).damage_class == "water_stain"

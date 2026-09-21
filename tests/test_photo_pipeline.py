@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 from synth import rect
-from synth_photo import CAMERA_HEIGHT, room_photos
+from synth_photo import CAMERA_HEIGHT, paint_ruler, room_photos
 
 from floorfathom.photo_pipeline import MONO_SCALE_REL_SIGMA, plan_photo_room
 from floorfathom.schema import CapturePlan
@@ -29,6 +29,16 @@ def anchored():  # the scale is known (a reference): the intervals are then the 
 @pytest.fixture(scope="module")
 def mono_biased():  # nothing anchors the scale and the depth model reads 30% long
     return _plan(bias=1.3)
+
+
+@pytest.fixture(scope="module")
+def with_ruler():  # the depth model reads 30% long, and the yellow ruler is on the south wall, as the protocol asks
+    station = (2.2, CAMERA_HEIGHT, 1.0)
+    photos, poses, depth, _ = room_photos(rect(0, 0, 5, 4), HEIGHT, station, YAWS, [8.0] + [0.0] * 7, [5.0] + [0.0] * 7,
+                                          noise=0.005, bias=1.3)
+    for im, c2w in zip(photos.images, depth.c2ws):
+        paint_ruler(im.rgb, station, c2w, (2.2, CAMERA_HEIGHT, 0.0))
+    return plan_photo_room("room", photos, poses, depth)
 
 
 def _covers(m, truth):
@@ -64,6 +74,22 @@ def test_without_a_reference_the_scale_is_the_models_and_a_biased_model_is_still
     assert "scale_from_depth_model_only" in room.flags
     assert all(_covers(w.length, min(TRUE_WALLS, key=lambda t: abs(t - w.length.value))) for w in room.walls)
     assert _covers(room.floor_area, 20.0) and _covers(room.ceiling_height, HEIGHT)
+
+
+def test_the_ruler_in_the_photos_fixes_a_biased_depth_model_and_narrows_the_intervals(with_ruler, mono_biased):
+    room, d = with_ruler.rooms[0], with_ruler.diagnostics
+    assert d.scale_method == "reference_object" and d.scale_factor == pytest.approx(1 / 1.3, rel=0.05) and d.scale_rel_sigma < 0.08
+    assert "scale_from_depth_model_only" not in room.flags and "reference_ruler_not_found" not in room.flags
+    lengths = sorted(w.length.value for w in room.walls)
+    assert np.allclose(lengths, TRUE_WALLS, rtol=0.08)  # inside the +-8% gate, from a model that read 30% long
+    assert _covers(room.floor_area, 20.0) and _covers(room.ceiling_height, HEIGHT)
+    width = lambda p: np.mean([(w.length.hi - w.length.lo) / w.length.value for w in p.rooms[0].walls])  # noqa: E731
+    assert width(with_ruler) < 0.6 * width(mono_biased)
+
+
+def test_without_a_ruler_the_room_says_so(mono_biased):
+    flags = mono_biased.rooms[0].flags
+    assert "reference_ruler_not_found" in flags and "scale_from_depth_model_only" in flags
 
 
 def test_one_photo_is_too_thin_and_gives_an_explicit_null_room():
@@ -111,7 +137,7 @@ def test_run_photo_gives_every_room_folder_a_plan_with_unique_ids_and_keeps_a_ro
         (tmp_path / "images" / name).mkdir(parents=True)
         (tmp_path / "images" / name / "1.png").write_bytes(b"")  # only discovered; loading is stubbed
 
-    def fake_load(name, paths):
+    def fake_load(name, paths, long_side=1008):  # the frames reload the same photos at a larger size
         walls, pos, yaws = rooms[name]
         photos, poses, depth, _ = room_photos(walls, HEIGHT, pos, yaws, [8.0] + [0.0] * (len(yaws) - 1), noise=0.005)
         for im in photos.images:
@@ -123,8 +149,17 @@ def test_run_photo_gives_every_room_folder_a_plan_with_unique_ids_and_keeps_a_ro
 
     monkeypatch.setattr(PP, "load_photo_set", fake_load)
     monkeypatch.setattr(PP, "register_rotations", lambda images, seed=0: poses_of[id(images)])
+    from floorfathom import photo_damage
+
+    debug_dirs = []
+    monkeypatch.setattr(photo_damage, "assess", lambda room, result, **kw: debug_dirs.append(kw.get("debug_dir")))
     plan = PP.run_photo(tmp_path, tmp_path / "out", depth=lambda rgb: fakes[int(rgb[0, 0, 1])](rgb),
                         scale=1.0, scale_rel_sigma=0.02)
+    assert debug_dirs and set(debug_dirs) == {tmp_path / "out" / "debug" / "damage"}  # damage pictures by default
+    debug_dirs.clear()
+    PP.run_photo(tmp_path, tmp_path / "out2", depth=lambda rgb: fakes[int(rgb[0, 0, 1])](rgb),
+                 scale=1.0, scale_rel_sigma=0.02, debug=False)
+    assert debug_dirs and set(debug_dirs) == {None}
     assert plan.tier == "photo" and sorted(r.name for r in plan.rooms) == ["a", "b", "thin"]
     ids = [r.id for r in plan.rooms] + [w.id for r in plan.rooms for w in r.walls]
     assert len(ids) == len(set(ids))

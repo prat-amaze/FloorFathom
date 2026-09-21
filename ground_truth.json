@@ -1,6 +1,7 @@
 {
   "property": "Home flat benchmark capture",
   "units": "cm",
+  "reference_ruler": { "note": "yellow ruler taped in each video room (video tier scale); the yellow body measured end to end, the printed scale is 30 cm", "yellow_length": 31.6, "yellow_width": 4.0 },
   "rooms": {
     "hall_kitchen": {
       "note": "Open-plan hall + kitchen, single connected space, irregular quadrilateral (not a rectangle) - kitchen side and balcony side differ in length",
@@ -14,11 +15,11 @@
       ],
       "diagonal": null,
       "openings": [
-        { "id": "main_door", "type": "door", "width": 106, "height": 210 },
-        { "id": "b1_door", "type": "door", "width": 94, "height": 210, "connects": ["hall_kitchen", "bedroom_b1"], "note": "measured once together with b2_door" },
-        { "id": "b2_door", "type": "door", "width": 94, "height": 210, "connects": ["hall_kitchen", "master_bedroom_b2"], "note": "measured once together with b1_door" },
-        { "id": "bathroom_door", "type": "door", "width": 79.4, "height": 210, "connects": ["hall_kitchen", "bathroom"] },
-        { "id": "balcony_door", "type": "door", "width": 165, "height": 245, "note": "previously mislabeled 'hall window', functions as a sliding door opening" },
+        { "id": "main_door", "type": "door", "width": 107, "width_outer": 107, "height": 210, "note": "frame edge to frame edge, remeasured 2026-09-20 (was 106); clear opening not measured because no capture shows this door open" },
+        { "id": "b1_door", "type": "door", "width": 81, "width_outer": 92.8, "height": 210, "connects": ["hall_kitchen", "bedroom_b1"], "note": "width is the clear opening between the inner frame edges, width_outer is frame edge to frame edge (remeasured 2026-09-20); measured separately from b2_door" },
+        { "id": "b2_door", "type": "door", "width": 81, "width_outer": 94.2, "height": 210, "connects": ["hall_kitchen", "master_bedroom_b2"], "note": "width is the clear opening between the inner frame edges, width_outer is frame edge to frame edge (remeasured 2026-09-20); measured separately from b1_door" },
+        { "id": "bathroom_door", "type": "door", "width": 71, "width_outer": 81, "height": 210, "connects": ["hall_kitchen", "bathroom"], "note": "width is the clear opening between the inner frame edges, width_outer is frame edge to frame edge (remeasured 2026-09-20) (was 79.4)" },
+        { "id": "balcony_door", "type": "door", "width": 178.5, "height": 245, "note": "previously mislabeled 'hall window', functions as a sliding door opening; measured end to end (white edge to white edge) like the windows, remeasured 2026-09-20 (was 165)" },
         { "id": "kitchen_window", "type": "window", "width": 110, "height": 101 }
       ],
       "damage": [
@@ -55,7 +56,7 @@
         "tap_side_width": 90.3
       },
       "openings": [
-        { "id": "bathroom_door", "type": "door", "width": 79.4, "height": 210, "connects": ["hall_kitchen", "bathroom"] },
+        { "id": "bathroom_door", "type": "door", "width": 71, "width_outer": 81, "height": 210, "connects": ["hall_kitchen", "bathroom"], "note": "width is the clear opening between the inner frame edges, width_outer is frame edge to frame edge (remeasured 2026-09-20) (was 79.4)" },
         { "id": "bathroom_window", "type": "window", "width": 63, "height": 92.5 }
       ],
       "damage": [],
@@ -67,7 +68,7 @@
       "width": 361,
       "length": 301.5,
       "openings": [
-        { "id": "b2_door", "type": "door", "width": 94, "height": 210, "connects": ["hall_kitchen", "master_bedroom_b2"], "note": "measured once together with b1_door" },
+        { "id": "b2_door", "type": "door", "width": 81, "width_outer": 94.2, "height": 210, "connects": ["hall_kitchen", "master_bedroom_b2"], "note": "width is the clear opening between the inner frame edges, width_outer is frame edge to frame edge (remeasured 2026-09-20); measured separately from b1_door" },
         { "id": "b2_window", "type": "window", "width": 110, "height": 240 }
       ],
       "notes": "Contains full-length mirror - deliberate edge case for reflection handling"
@@ -78,7 +79,7 @@
       "length": 253.5,
       "width": 241.5,
       "openings": [
-        { "id": "b1_door", "type": "door", "width": 94, "height": 210, "connects": ["hall_kitchen", "bedroom_b1"], "note": "measured once together with b2_door" },
+        { "id": "b1_door", "type": "door", "width": 81, "width_outer": 92.8, "height": 210, "connects": ["hall_kitchen", "bedroom_b1"], "note": "width is the clear opening between the inner frame edges, width_outer is frame edge to frame edge (remeasured 2026-09-20); measured separately from b2_door" },
         { "id": "b1_window", "type": "window", "width": 110, "height": 240, "note": "shared measurement with B2 window - measured once, applied to both" }
       ]
     }
@@ -92,8 +93,8 @@
     "Hall photos and videos captured in the evening under artificial light"
   ],
   "measurement_caveats": [
+    "Door width convention: width is the clear opening between the inner frame edges (the gap a depth sensor sees in the wall) and width_outer is frame edge to frame edge; the balcony door and the windows are measured end to end only. Doors b1_door, b2_door and bathroom_door were remeasured on 2026-09-20 (earlier single values 94, 94 and 79.4 cm are replaced)",
     "Doors appear under the same id in each room they connect (b1_door, b2_door, bathroom_door); count each id once for opening scoring - 9 unique openings in total",
-    "b1_door and b2_door: measured once, same value applied to both - not independently verified per door",
     "B1 & B2 windows: measured once, same value applied to both rooms - not independently verified per window",
     "Hall diagonal not measured - 4 side lengths alone do not uniquely constrain the quadrilateral's true shape/angles",
     "Photos captured at 0.8x zoom (ultra-wide lens), video at 0.6x zoom - both have more lens distortion than the main lens; not corrected for in raw ground truth, must be handled in pipeline calibration"

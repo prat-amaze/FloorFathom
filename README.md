@@ -7,15 +7,14 @@ the Cozmo AI case study (`Applied AI.pdf`).
 
 | Tier | State |
 |---|---|
-| LiDAR (depth + poses + intrinsics) | **Per-room plans working** (this document). |
-| Video | Not started. |
+| LiDAR (depth + poses + intrinsics) | **Per-room plans, stitched plan, drift correction and damage working** (this document). |
+| Video | **Runs end to end, one room per clip; misses the wall and opening gates on real clips** (see "Video tier"). |
 | Photos | Not started. |
 
 Whole-property stitching (`stitch.py`) is built and tested on synthetic layouts: doorway
 adjacency, overlap check, footprint with an interval, and placement of rooms that arrive
 in their own frames (video, photo) by gluing their doorways. It has not been run on real
-video or photo rooms yet. Not done for the LiDAR tier: damage regions, concealed-damage
-flags, scope items.
+video or photo rooms yet. Damage regions, concealed-damage flags and scope items are described under "Damage".
 
 ## Run it
 
@@ -154,6 +153,75 @@ room (6 to 5) with the correction on, which is the failure to watch.
   hung room by the difference. Two doorways of equal width whose rooms fit either way are
   flagged `placement_ambiguous`. Rooms with no visible doorway (a closed door leaf, or a few
   photos) cannot be placed and are listed in `stitching.unplaced`.
+
+## Damage
+
+`assess.py` is the step every tier shares: per room it unrolls each wall, the floor and the ceiling into a flat colour
+patch (`surfaces.py`: posed RGB frames projected onto the surface, depth used to leave out furniture and to measure
+relief), finds damage (`damage.py`), and fills `room.damage` (class, surface, centre, width, height, length, area, all
+with intervals), `room.concealed_flags` (`concealed.py`: named rules, e.g. a stain under a ceiling stain, mould, a long
+crack) and `room.scope` (`scope.py`: one line per damage region keyed to its surface, plus an opening-up line where a
+flag fired). The LiDAR tier calls it from `run_lidar` (`lidar_frames.py` supplies sharp RGB frames with depth and undoes
+the drift correction); `debug/damage/<surface>.png` shows what was judged.
+
+- Classes (our own definition; the brief names none): water stain, mould, structural crack, peeling paint,
+  efflorescence, soot or fire, hole or impact, sagging or bulging, other. Proposals are class-agnostic (colour against the
+  surface's local median, thin dark ridges, depth relief), then classified by feature rules.
+- Checked on synthetic painted rooms (known place and size, each class, shadows, furniture, a door beside a stain, tilted
+  planes) and end to end on a synthetic LiDAR scan. Not checked on real LiDAR damage: none exists in `CozmoData/`.
+- On real patches from the video tier (`scripts/eval_damage_patches.py`) the staged leakage mark is found with the right
+  class (22 x 16 cm against a tape 21 x 25 cm), but doors, hardware, sockets, window bars and glare still give false
+  regions. On `CozmoData/single_room` (no known damage) an earlier detector reported 47 false regions; it was then fixed
+  for tilted relief, dark fixtures, glare and door edges and not re-measured.
+- A pretrained CLIP classifier over the same proposals was tried and dropped: on the real patches it failed 7 of the
+  acceptance checks against 5 for the rules.
+
+## Video tier
+
+```
+uv run floorfathom plan Data/B2.MOV --out out/b2 --reference-length-cm 31.6
+```
+
+One clip is one room. `video_pipeline.py`: keyframes (`io_video.py`), poses and sparse points by
+SfM (`sfm.py`, pycolmap), a dense cloud from a depth model fitted to the SfM depths
+(`points_video.py`), gravity from the floor and ceiling planes (`world.py`), then the same estimator
+and leave-chunks-out intervals as the LiDAR tier. SfM has no scale. The scale comes from the
+protocol's yellow ruler (`anchor.py`): its two ends are triangulated in the first 15 s of the clip
+and its tape-measured length (`--reference-length-cm`, default 31.6, ours) gives metres per SfM unit
+with its own uncertainty. If the ruler is not found, is flagged (few frames, weak sideways
+movement, large residual) or is far from the depth model's scale, the depth model's scale is used,
+every interval carries at least 15% scale uncertainty and the room is flagged
+`scale_from_depth_model_only` with the reason.
+
+Numbers on the new ruler clips (`B2`, `B1`, `H1`, this laptop, tape values in `ground_truth.json`,
+scored with `scripts/eval_video.py`):
+
+| | `B2` | `B1` | `H1` (Hall) |
+|---|---|---|---|
+| keyframes with a pose | 100% | 100% | 100% |
+| scale method | ruler, +-0.6% | ruler, +-0.4% | ruler |
+| walls within 3% of the tape | 0/4 | 0/4 | 0/4 |
+| ceiling | not observed | not observed | 2.74 m [2.60, 2.88] against 2.79 (-1.9%) |
+| openings within 2 cm | 0/1 (found 91 cm, tape 81) | 0/1 (missed) | 0/4 (all missed) |
+| run time | 35 min | 24 min | 35 min |
+
+What this shows and does not show:
+
+- The ruler scale is 0.62-0.65 of the depth model's on these clips. The only independent check is
+  the `H1` ceiling, which the scale estimate never sees: 2.74 m against 2.79 m by tape. The depth
+  model's scale would have given about 4.5 m, and the old `H2` clip (depth scale only) gave 4.68 m.
+  One clip is one data point; `B2` and `B1` had no ceiling to check.
+- The wall and opening gates are not met. Walls come out as fragments (7 to 19 per room) and short
+  (`B2` 2.47 m of 3.61 m, `H1` 1.72 m of 5.26 m); the estimator was tuned on LiDAR clouds, and this
+  was not fixed.
+- Repeatability of `H1` against `H2` was not scored: `H2` was not run on the ruler clips.
+- Without a ruler in view the depth model gave scale errors of -1%, +7% and +67% on the earlier
+  clips, so the fallback cannot meet the +-3% gate.
+- One clip is one room. A folder of clips gives one stitched plan (`stitch.py` glues the rooms by their
+  doorways; a clip with no room is listed in the notes, an unplaceable room stays in its own frame).
+  Tested on canned per-room plans only. On the real plans of `H1`, `B1` and `B2`, only `B2` was placed:
+  it was the only room with a detected doorway, so `H1` and `B1` had nothing to glue and were reported
+  unplaced. Doorway detection is what limits video stitching.
 
 ## Layout
 

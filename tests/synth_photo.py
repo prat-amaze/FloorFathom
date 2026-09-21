@@ -7,6 +7,7 @@ optional noise and scale bias, so a test can compare what the pipeline recovers 
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -93,3 +94,18 @@ def room_photos(walls, height, position, yaws, pitches=None, rolls=None, **depth
         images.append(PhotoImage(f"{i}.jpg", str(i), rgb, (W, H), F35, F))
     poses = Poses([world_to_root @ c for c in c2w], 0, {}, 0.0, [])
     return PhotoSet("room", images), poses, FakeDepth(walls, height, position, c2w, **depth_kw), world_to_root
+
+
+def paint_ruler(rgb: np.ndarray, position, c2w: np.ndarray, centre, length: float = 0.316, width: float = 0.04) -> bool:
+    """Paint an upright yellow ruler into ``rgb`` where a camera at ``position`` would see it on a wall at ``centre``
+    (x, y, z), facing +z. Returns False, painting nothing, when it is not fully in view."""
+    cx, cy, cz = centre
+    corners = np.array([[cx + sx * width / 2, cy + sy * length / 2, cz] for sx, sy in [(-1, -1), (1, -1), (1, 1), (-1, 1)]])
+    cam = (corners - np.asarray(position, float)) @ c2w  # world -> camera
+    if np.any(cam[:, 2] < 0.2):
+        return False
+    uv = np.column_stack([F * cam[:, 0] / cam[:, 2] + W / 2, F * cam[:, 1] / cam[:, 2] + H / 2])
+    if np.any(uv < 3) or np.any(uv[:, 0] > W - 4) or np.any(uv[:, 1] > H - 4):
+        return False
+    cv2.fillConvexPoly(rgb, np.round(uv).astype(np.int32), (255, 255, 0))
+    return True
